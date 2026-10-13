@@ -1,5 +1,6 @@
 import typescriptEslint from "typescript-eslint";
 
+// 为 TypeScript 源码配置解析器和风格检查；npm run lint 使用此文件。
 export default [{
     files: ["**/*.ts"],
 }, {

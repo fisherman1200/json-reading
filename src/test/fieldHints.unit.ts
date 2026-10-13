@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { collectFieldHints } from '../fieldHints';
 
+// 纯解析单元测试：无需启动 VS Code，断言中的数字均为从 0 开始的源码行号。
+// 覆盖标量、嵌套值、单行多字段、CRLF/Unicode、无效输入、列数差异和 JSONC。
 test('maps scalar values by column, including null, booleans and escaped strings', () => {
     const hints = collectFieldHints('[\n["ID","Name","Flag","Empty"],\n[\n1,\n"a, \\"quoted\\"",\ntrue,\nnull\n]\n]');
     assert.deepEqual([...hints], [[3, ['ID']], [4, ['Name']], [5, ['Flag']], [6, ['Empty']]]);
