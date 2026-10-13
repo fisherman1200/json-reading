@@ -1,0 +1,23 @@
+[
+  [
+    "ID",
+    "Characters",
+    "Attribute",
+    "CharactersEffects",
+    "EffectsExchange",
+    "EffectsDescription",
+    "Name"
+  ],
+  [
+    1,
+    "19010004,19010014",
+    [
+      "AttackProp:0.10",
+      "HpProp:0.10"
+    ],
+    "19010014",
+    "skill_chushi_ruo:skill_chushi",
+    "i18n_300734",
+    "i18n_300735"
+  ]
+]

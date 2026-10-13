@@ -2,4 +2,7 @@
 
 ## 0.0.1
 
-- Initial VS Code extension scaffold with the Hello World command.
+- 根据表格型 JSON / JSONC 的首个数组，为后续数据添加灰底行尾字段名提示。
+- 支持嵌套值、多行选择和多光标。
+- 增加全部行 / 仅选中行设置、切换命令和状态栏入口。
+- 支持编辑自动刷新、解析缓存和可见范围渲染。

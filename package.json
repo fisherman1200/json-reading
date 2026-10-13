@@ -1,7 +1,7 @@
 {
   "name": "json-reading",
   "displayName": "json_reading",
-  "description": "easytoread",
+  "description": "为表格型 JSON 数据显示首行定义的字段名",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.140.0"
@@ -9,15 +9,37 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:json",
+    "onLanguage:jsonc"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "json-reading.helloWorld",
-        "title": "Hello World"
+        "command": "json-reading.toggleFieldHintsMode",
+        "title": "JSON Reading: 切换字段名提示（全部行 / 选中行）"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "JSON Reading",
+      "properties": {
+        "json-reading.fieldHints.displayMode": {
+          "type": "string",
+          "enum": [
+            "selected",
+            "all"
+          ],
+          "default": "selected",
+          "enumDescriptions": [
+            "仅在光标所在行或选中的行显示字段名",
+            "在所有数据行显示字段名"
+          ],
+          "description": "字段名行尾提示的显示方式",
+          "scope": "language-overridable"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -25,7 +47,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:unit": "npm run compile && node --test out/test/fieldHints.unit.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -40,5 +63,8 @@
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   }
 }
