@@ -83,10 +83,14 @@ export function activate(context: vscode.ExtensionContext) {
             const end = document.lineAt(line).range.end;
             // 转义字段名里的换行等控制字符，避免标签破坏行尾布局；同一行的字段合并显示。
             const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
+            // Markdown 会忽略开头的普通换行，用不换行空格段落保留一行留白。
+            const hoverMessage = new vscode.MarkdownString()
+                .appendMarkdown('&nbsp;\n\n')
+                .appendText(`字段名：${label}`);
             options.push({
                 range: new vscode.Range(end, end),
                 renderOptions: { after: { contentText: `  ${label}  ` } },
-                hoverMessage: `字段名：${label}`
+                hoverMessage
             });
         }
         editor.setDecorations(decoration, options);
