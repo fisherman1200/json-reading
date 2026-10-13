@@ -6,6 +6,8 @@ import { promisify } from 'node:util';
 import { collectFieldHints } from './fieldHints';
 import { TableDescriptions } from './tableDescriptions';
 import { createFieldHover, openWorkbookCommand } from './fieldHover';
+import { TableGitController } from './tableGitController';
+import { HoverRefresh } from './hoverRefresh';
 
 // all：所有可见数据行；selected：光标所在行及多行/多光标选区。
 type DisplayMode = 'all' | 'selected';
@@ -15,6 +17,9 @@ export function activate(context: vscode.ExtensionContext) {
     // after 在范围末尾追加虚拟文字，不修改 JSON 内容；使用主题颜色适配明暗主题。
     // 目前与 GitLens 一样使用 after，VS Code 没有公开跨扩展的排序优先级。
     const descriptions = new TableDescriptions();
+    const tableGit = new TableGitController(descriptions);
+    const hoverRefresh = new HoverRefresh();
+    let hoverAfterLoad: string | undefined;
     const decoration = vscode.window.createTextEditorDecorationType({
         after: {
             margin: '0 0 0 2em',
@@ -65,6 +70,12 @@ export function activate(context: vscode.ExtensionContext) {
             cache.set(document, entry);
         }
         const table = entry.hints.size ? descriptions.get(document.uri.fsPath) : undefined;
+        const git = entry.hints.size && document.uri.scheme === 'file' ? tableGit.get(document.uri.fsPath) : undefined;
+        // 只为当前编辑器的表格加载登记一次重开；Git 后台轮询本身不触发。
+        // 同步过程由 onDidSync 登记，避免同步结束时重复弹出。
+        if (table?.state === 'loading' && !git?.busy && editor === vscode.window.activeTextEditor) {
+            hoverAfterLoad = document.uri.fsPath;
+        }
         const mode = modeFor(document);
         const options: vscode.DecorationOptions[] = [];
         // 全部行模式也只向 VS Code 提交可见行的装饰；滚动时再补齐，减少渲染开销。
@@ -91,7 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
             const end = document.lineAt(line).range.end;
             // 转义字段名里的换行等控制字符，避免标签破坏行尾布局；同一行的字段合并显示。
             const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
-            const hoverMessage = createFieldHover(fields, table);
+            const hoverMessage = createFieldHover(fields, table, git);
             options.push({
                 range: new vscode.Range(end, end),
                 renderOptions: { after: { contentText: `  ${label}  ` } },
@@ -105,11 +116,31 @@ export function activate(context: vscode.ExtensionContext) {
     function refresh() {
         vscode.window.visibleTextEditors.forEach(render);
         updateStatus();
+        refreshLoadedHover();
+    }
+
+    function refreshLoadedHover() {
+        if (!hoverAfterLoad) { return; }
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.uri.fsPath !== hoverAfterLoad || !supported(editor.document)) {
+            hoverAfterLoad = undefined;
+            return;
+        }
+        const table = descriptions.get(hoverAfterLoad);
+        const git = editor.document.uri.scheme === 'file' ? tableGit.get(hoverAfterLoad) : undefined;
+        // 等待字段与分支两个异步查询都完成，避免重新打开的仍然是“正在读取”。
+        if (table?.state === 'loading' || git?.loading || git?.busy || pending.has(editor.document)) { return; }
+        hoverAfterLoad = undefined;
+        if (!table || !vscode.window.state.focused) { return; }
+        const fields = cache.get(editor.document)?.hints.get(editor.selection.active.line);
+        if (fields?.length) { void hoverRefresh.show(editor, createFieldHover(fields, table, git)); }
     }
 
     // VS Code 在扩展停用时统一释放这些装饰、状态栏、命令和事件监听器。
     context.subscriptions.push(
-        decoration, status, descriptions,
+        decoration, status, descriptions, tableGit, hoverRefresh,
+        tableGit.onDidSync(file => { hoverAfterLoad = file; refresh(); }),
+        tableGit.onDidChange(refresh),
         descriptions.onDidChange(refresh),
         vscode.commands.registerCommand(openWorkbookCommand, async (file: unknown, sheet: unknown) => {
             try {
@@ -182,6 +213,7 @@ export function activate(context: vscode.ExtensionContext) {
             const timer = setTimeout(() => {
                 pending.delete(event.document);
                 vscode.window.visibleTextEditors.filter(editor => editor.document === event.document).forEach(render);
+                refreshLoadedHover();
             }, 150);
             pending.set(event.document, timer);
             vscode.window.visibleTextEditors.filter(editor => editor.document === event.document).forEach(render);

@@ -16,6 +16,14 @@ export class TableDescriptions implements vscode.Disposable {
     private results = new Map<string, TableView>();
     private generation = 0;
     private disposed = false;
+    private updating = false;
+
+    get directory(): string { return this.settings().directory; }
+
+    setUpdating(value: boolean) {
+        this.updating = value;
+        this.reset();
+    }
 
     constructor() {
         this.subscriptions.push(
@@ -77,6 +85,7 @@ export class TableDescriptions implements vscode.Disposable {
     }
 
     get(jsonFile: string): TableView | undefined {
+        if (this.updating) { return { state: 'loading', message: '正在更新策划表…' }; }
         if (!this.index || this.disposed) { return undefined; }
         const existing = this.results.get(jsonFile);
         if (existing) { return existing; }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import type { TableView } from './tableDescriptions';
+import { syncTablesCommand, type GitView } from './tableGitController';
 
 export const openWorkbookCommand = 'json-reading.openSourceWorkbook';
 
@@ -10,7 +11,7 @@ function escapeCell(text: string): string {
 }
 
 /** 表格内容一律作为纯文本追加，避免策划说明中的 Markdown 或链接被执行/渲染。 */
-export function createFieldHover(fields: string[], table?: TableView): vscode.MarkdownString {
+export function createFieldHover(fields: string[], table?: TableView, git?: GitView): vscode.MarkdownString {
     const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
     // Markdown 忽略开头的普通换行，用空白段落与 GitLens 内容隔开。
     const hover = new vscode.MarkdownString().appendMarkdown('&nbsp;\n\n').appendText(`字段名：${label}`);
@@ -40,6 +41,25 @@ export function createFieldHover(fields: string[], table?: TableView): vscode.Ma
         }
     } else if (table?.message) {
         hover.appendText(`\n\n${table.message}`);
+    }
+    if (git) {
+        hover.supportThemeIcons = true;
+        hover.appendMarkdown('\n\n---\n\n');
+        if (git.busy) {
+            hover.appendMarkdown('$(sync~spin) ');
+            hover.appendText('正在更新策划表…');
+        } else {
+            const target = `command:${syncTablesCommand}?${encodeURIComponent(JSON.stringify([git.file]))}`;
+            hover.isTrusted = { enabledCommands: [openWorkbookCommand, syncTablesCommand] };
+            hover.appendMarkdown(`[$(sync)](${target} "切换到 JSON 同名分支并 Fetch / Pull 策划表")  `);
+            if (git.jsonBranch !== undefined && git.tableBranch !== undefined) {
+                if (!git.jsonBranch || git.jsonBranch !== git.tableBranch) {
+                    hover.supportHtml = true;
+                    hover.appendMarkdown('<span style="color:#cca700;">$(warning)</span> ');
+                }
+                hover.appendText(`策划表：${git.tableBranch || '分离 HEAD'}  /  JSON：${git.jsonBranch || '分离 HEAD'}`);
+            } else { hover.appendText(git.message ?? ''); }
+        }
     }
     return hover;
 }

@@ -17,6 +17,11 @@
   "contributes": {
     "commands": [
       {
+        "command": "json-reading.syncTables",
+        "title": "JSON Reading: 按当前 JSON 分支更新策划表",
+        "icon": "$(sync)"
+      },
+      {
         "command": "json-reading.toggleFieldHintsMode",
         "title": "JSON Reading: 切换字段名提示（全部行 / 选中行）"
       },
