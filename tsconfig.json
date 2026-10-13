@@ -12,6 +12,7 @@
         ],
         "sourceMap": true,
         "rootDir": "src",
+        "skipLibCheck": true, // 跳过第三方声明检查：saxes 的类型声明暂未适配 TypeScript 6；项目源码仍严格检查。
         "strict": true, /* enable all strict type-checking options */
         /* Additional Checks */
         // "noImplicitReturns": true, /* Report error when not all code paths in function return a value. */

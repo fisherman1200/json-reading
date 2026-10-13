@@ -19,6 +19,18 @@
       {
         "command": "json-reading.toggleFieldHintsMode",
         "title": "JSON Reading: 切换字段名提示（全部行 / 选中行）"
+      },
+      {
+        "command": "json-reading.selectTableDirectory",
+        "title": "JSON Reading: 选择策划表目录"
+      },
+      {
+        "command": "json-reading.refreshTableIndex",
+        "title": "JSON Reading: 刷新策划表索引"
+      },
+      {
+        "command": "json-reading.selectTableWorkbook",
+        "title": "JSON Reading: 选择当前 JSON 的策划工作簿"
       }
     ],
     "configuration": {
@@ -37,6 +49,51 @@
           ],
           "description": "字段名行尾提示的显示方式",
           "scope": "language-overridable"
+        },
+        "json-reading.tables.directory": {
+          "type": "string",
+          "default": "",
+          "description": "策划表根目录。留空时不读取策划表；支持子目录扫描。相对路径基于第一个工作区文件夹。",
+          "scope": "machine-overridable"
+        },
+        "json-reading.tables.registry": {
+          "type": "string",
+          "default": "",
+          "description": "注册表路径，可相对于策划表根目录。留空时自动查找唯一的注册表.xlsm。",
+          "scope": "window"
+        },
+        "json-reading.tables.fieldRow": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "字段英文名所在行（从 1 开始）。",
+          "scope": "window"
+        },
+        "json-reading.tables.descriptionRow": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "字段简述所在行（从 1 开始）。",
+          "scope": "window"
+        },
+        "json-reading.tables.detailRow": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "字段详细说明所在行（从 1 开始）。",
+          "scope": "window"
+        },
+        "json-reading.tables.workbookOverrides": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "同名页签的工作簿选择：键为 JSON 文件名（不含扩展名），值为相对于策划表根目录的 XLSM 路径。",
+          "scope": "window"
         }
       }
     }
@@ -48,12 +105,13 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test",
-    "test:unit": "npm run compile && node --test out/test/fieldHints.unit.js"
+    "test:unit": "npm run compile && node --test out/test/*.unit.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
     "@types/vscode": "^1.140.0",
+    "@types/yauzl": "^3.4.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "eslint": "^10.5.0",
@@ -65,6 +123,8 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
-    "jsonc-parser": "^3.3.1"
+    "jsonc-parser": "^3.3.1",
+    "saxes": "^6.0.0",
+    "yauzl": "^3.4.0"
   }
 }

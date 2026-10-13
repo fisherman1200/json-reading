@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { collectFieldHints } from './fieldHints';
+import { TableDescriptions } from './tableDescriptions';
+import { createFieldHover, openWorkbookCommand } from './fieldHover';
 
 // all：所有可见数据行；selected：光标所在行及多行/多光标选区。
 type DisplayMode = 'all' | 'selected';
@@ -8,6 +14,7 @@ type DisplayMode = 'all' | 'selected';
 export function activate(context: vscode.ExtensionContext) {
     // after 在范围末尾追加虚拟文字，不修改 JSON 内容；使用主题颜色适配明暗主题。
     // 目前与 GitLens 一样使用 after，VS Code 没有公开跨扩展的排序优先级。
+    const descriptions = new TableDescriptions();
     const decoration = vscode.window.createTextEditorDecorationType({
         after: {
             margin: '0 0 0 2em',
@@ -57,6 +64,7 @@ export function activate(context: vscode.ExtensionContext) {
             entry = { version: document.version, hints: collectFieldHints(document.getText(), document.languageId === 'jsonc') };
             cache.set(document, entry);
         }
+        const table = entry.hints.size ? descriptions.get(document.uri.fsPath) : undefined;
         const mode = modeFor(document);
         const options: vscode.DecorationOptions[] = [];
         // 全部行模式也只向 VS Code 提交可见行的装饰；滚动时再补齐，减少渲染开销。
@@ -83,10 +91,7 @@ export function activate(context: vscode.ExtensionContext) {
             const end = document.lineAt(line).range.end;
             // 转义字段名里的换行等控制字符，避免标签破坏行尾布局；同一行的字段合并显示。
             const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
-            // Markdown 会忽略开头的普通换行，用不换行空格段落保留一行留白。
-            const hoverMessage = new vscode.MarkdownString()
-                .appendMarkdown('&nbsp;\n\n')
-                .appendText(`字段名：${label}`);
+            const hoverMessage = createFieldHover(fields, table);
             options.push({
                 range: new vscode.Range(end, end),
                 renderOptions: { after: { contentText: `  ${label}  ` } },
@@ -104,7 +109,43 @@ export function activate(context: vscode.ExtensionContext) {
 
     // VS Code 在扩展停用时统一释放这些装饰、状态栏、命令和事件监听器。
     context.subscriptions.push(
-        decoration, status,
+        decoration, status, descriptions,
+        descriptions.onDidChange(refresh),
+        vscode.commands.registerCommand(openWorkbookCommand, async (file: unknown, sheet: unknown) => {
+            try {
+                if (!vscode.workspace.isTrusted) {
+                    throw new Error('请先信任当前工作区。');
+                }
+                if (typeof file !== 'string' || !path.isAbsolute(file) || path.extname(file).toLowerCase() !== '.xlsm') {
+                    throw new Error('来源不是有效的 XLSM 文件路径。');
+                }
+                if (!(await fs.stat(file)).isFile()) {
+                    throw new Error('来源文件不存在或不是普通文件。');
+                }
+                if (typeof sheet !== 'string' || !sheet.trim()) {
+                    throw new Error('缺少目标页签名称，请重新打开悬浮提示。');
+                }
+                // Windows 通过 Excel COM 激活目标页签；已有工作簿优先复用。
+                if (process.platform === 'win32') {
+                    const script = await fs.readFile(context.asAbsolutePath('scripts/openWorkbook.ps1'), 'utf8');
+                    // 路径和页签名通过环境变量传递，不拼进脚本，兼容中文及特殊字符。
+                    await promisify(execFile)('powershell.exe', [
+                        '-NoProfile', '-NonInteractive', '-Command', script
+                    ], {
+                        windowsHide: true,
+                        env: { ...process.env, JSON_READING_WORKBOOK: file, JSON_READING_SHEET: sheet }
+                    });
+                } else if (!await vscode.env.openExternal(vscode.Uri.file(file))) {
+                    throw new Error('系统无法打开此工作簿，请检查 XLSM 的默认打开程序。');
+                } else {
+                    void vscode.window.showInformationMessage(`已打开工作簿；自动切换页签仅支持 Windows Excel，请手动选择“${sheet}”。`);
+                }
+            } catch (error) {
+                // execFile 的 message 包含整段脚本，优先显示 PowerShell 的实际错误输出。
+                const stderr = (error as { stderr?: string } | null)?.stderr?.trim();
+                void vscode.window.showErrorMessage(`打开策划表失败：${stderr || (error instanceof Error ? error.message : String(error))}`);
+            }
+        }),
         vscode.commands.registerCommand('json-reading.toggleFieldHintsMode', async () => {
             const document = vscode.window.activeTextEditor?.document;
             if (!document || !supported(document)) {
