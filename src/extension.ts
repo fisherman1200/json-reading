@@ -8,6 +8,8 @@ import { TableDescriptions } from './tableDescriptions';
 import { createFieldHover, openWorkbookCommand } from './fieldHover';
 import { TableGitController } from './tableGitController';
 import { HoverRefresh } from './hoverRefresh';
+import { RelationController } from './relationController';
+import { isRelationFile } from './relationStore';
 
 // all：所有可见数据行；selected：光标所在行及多行/多光标选区。
 type DisplayMode = 'all' | 'selected';
@@ -19,6 +21,7 @@ export function activate(context: vscode.ExtensionContext) {
     const descriptions = new TableDescriptions();
     const tableGit = new TableGitController(descriptions);
     const hoverRefresh = new HoverRefresh();
+    const relations = new RelationController(context, descriptions);
     let hoverAfterLoad: string | undefined;
     const decoration = vscode.window.createTextEditorDecorationType({
         after: {
@@ -39,7 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
     // 每份文档各有一个防抖计时器，互不影响；等待期间隐藏旧位置上的提示。
     const pending = new Map<vscode.TextDocument, ReturnType<typeof setTimeout>>();
     const supported = (document: vscode.TextDocument) =>
-        document.languageId === 'json' || document.languageId === 'jsonc';
+        !isRelationFile(document.uri.fsPath) && (document.languageId === 'json' || document.languageId === 'jsonc');
     // 传入文档，使读取结果包含当前工作区、文件夹及语言专属配置。
     const modeFor = (document: vscode.TextDocument): DisplayMode =>
         vscode.workspace.getConfiguration('json-reading', document).get<DisplayMode>('fieldHints.displayMode', 'selected');
@@ -102,7 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
             const end = document.lineAt(line).range.end;
             // 转义字段名里的换行等控制字符，避免标签破坏行尾布局；同一行的字段合并显示。
             const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
-            const hoverMessage = createFieldHover(fields, table, git);
+            const hoverMessage = createFieldHover(fields, table, git, relations.view(document, line));
             options.push({
                 range: new vscode.Range(end, end),
                 renderOptions: { after: { contentText: `  ${label}  ` } },
@@ -128,17 +131,24 @@ export function activate(context: vscode.ExtensionContext) {
         }
         const table = descriptions.get(hoverAfterLoad);
         const git = editor.document.uri.scheme === 'file' ? tableGit.get(hoverAfterLoad) : undefined;
+        const relation = relations.view(editor.document, editor.selection.active.line);
         // 等待字段与分支两个异步查询都完成，避免重新打开的仍然是“正在读取”。
-        if (table?.state === 'loading' || git?.loading || git?.busy || pending.has(editor.document)) { return; }
+        if (table?.state === 'loading' || git?.loading || git?.busy || relation?.state.loading || pending.has(editor.document)) { return; }
         hoverAfterLoad = undefined;
-        if (!table || !vscode.window.state.focused) { return; }
+        if ((!table && !relation) || !vscode.window.state.focused) { return; }
         const fields = cache.get(editor.document)?.hints.get(editor.selection.active.line);
-        if (fields?.length) { void hoverRefresh.show(editor, createFieldHover(fields, table, git)); }
+        if (fields?.length) { void hoverRefresh.show(editor, createFieldHover(fields, table, git, relation)); }
     }
 
     // VS Code 在扩展停用时统一释放这些装饰、状态栏、命令和事件监听器。
     context.subscriptions.push(
-        decoration, status, descriptions, tableGit, hoverRefresh,
+        decoration, status, descriptions, tableGit, hoverRefresh, relations,
+        relations.onDidChange(uri => {
+            if (vscode.window.activeTextEditor?.document.uri.toString() === uri) {
+                hoverAfterLoad = vscode.window.activeTextEditor.document.uri.fsPath;
+            }
+            refresh();
+        }),
         tableGit.onDidSync(file => { hoverAfterLoad = file; refresh(); }),
         tableGit.onDidChange(refresh),
         descriptions.onDidChange(refresh),

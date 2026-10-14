@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { TableIndex, configName, type TableSettings } from '../tableIndex';
 import { readSheetNames, readSheetRows } from '../workbookReader';
+import { RelationIndex } from '../relations';
 
 // 最小 OOXML ZIP 测试夹具，不依赖 Excel 安装，也不携带真实策划数据或宏。
 function zip(entries: Record<string, string>): Buffer {
@@ -59,6 +60,37 @@ test('normalizes front/back-end prefixes and JSON/CSV extensions', () => {
     for (const name of ['@RewardConfig', '^RewardConfig.csv', 'RewardConfig.JSON', '/data/RewardConfig.jsonc']) {
         assert.equal(configName(name), 'rewardconfig');
     }
+});
+
+test('关联索引扫描未注册页签，重复 ID 保留全部记录，完整列按需读取', async t => {
+    const { directory, settings } = await fixture(t);
+    await fs.writeFile(path.join(directory, 'extra.xlsm'), workbook('未注册资源',
+        `<row r="5">${cell('A5', 'ID')}${cell('B5', 'Name')}${cell('C5', 'Amount')}</row>` +
+        `<row r="6">${cell('A6', '100')}${cell('B6', '矿石')}${cell('C6', '20')}</row>` +
+        `<row r="7">${cell('A7', '100')}${cell('B7', '矿石变体')}${cell('C7', '30')}</row>`));
+    const index = new RelationIndex(settings), all = await index.scan();
+    const extra = all.find(table => table.target.sheet === '未注册资源')!;
+    assert.equal(extra.rows.get('100')?.length, 2);
+    assert.ok(!extra.rows.get('100')?.[0].values.some(([field]) => field === 'Amount'));
+    const records = await index.records(extra.target, '100');
+    assert.equal(records[0].values.find(([field]) => field === 'Amount')?.[1], '20');
+    assert.equal(records[1].values.find(([field]) => field === 'Amount')?.[1], '30');
+});
+
+test('关联索引支持明确指定非 ID 键，同页签多个索引互不混淆', async t => {
+    const { directory, settings } = await fixture(t);
+    await fs.writeFile(path.join(directory, 'group.xlsm'), workbook('分组',
+        `<row r="5">${cell('A5', 'ID')}${cell('B5', 'GroupID')}${cell('C5', 'Name')}</row>` +
+        `<row r="6">${cell('A6', '100')}${cell('B6', '8')}${cell('C6', '一组')}</row>` +
+        `<row r="7">${cell('A7', '200')}${cell('B7', '8')}${cell('C7', '另一组')}</row>`));
+    const index = new RelationIndex(settings), target = { file: 'group.xlsm', sheet: '分组', names: [] };
+    const ids = await index.read(target), groups = await index.read({ ...target, keyField: 'GroupID' });
+    assert.equal(ids.rows.get('100')?.length, 1);
+    assert.equal(ids.rows.get('8'), undefined);
+    assert.equal(groups.rows.get('8')?.length, 2);
+    const records = await index.records({ ...target, keyField: 'GroupID' }, '8');
+    assert.deepEqual(records.map(record => record.values.find(([field]) => field === 'ID')?.[1]), ['100', '200']);
+    await assert.rejects(index.read({ ...target, keyField: 'Missing' }), /缺少键字段/);
 });
 test('resolves unknown workbook name recursively and matches exact field names', async t => {
     const { directory, settings } = await fixture(t);

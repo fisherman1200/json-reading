@@ -17,6 +17,16 @@
   "contributes": {
     "commands": [
       {
+        "command": "json-reading.rescanRelations",
+        "title": "JSON Reading: 手动全搜索当前字段的关联",
+        "icon": "$(search)"
+      },
+      {
+        "command": "json-reading.clearRelations",
+        "title": "JSON Reading: 清空当前 JSON 的关联匹配表",
+        "icon": "$(trash)"
+      },
+      {
         "command": "json-reading.syncTables",
         "title": "JSON Reading: 按当前 JSON 分支更新策划表",
         "icon": "$(sync)"
@@ -41,6 +51,12 @@
     "configuration": {
       "title": "JSON Reading",
       "properties": {
+        "json-reading.relations.i18nFile": {
+          "type": "string",
+          "default": "",
+          "description": "中文语言表路径。留空时读取当前 JSON 同目录的 i18zhConfigData.json；相对路径基于当前 JSON 目录。",
+          "scope": "resource"
+        },
         "json-reading.fieldHints.displayMode": {
           "type": "string",
           "enum": [

@@ -8,6 +8,8 @@ export type TableView = TableResult | { state: 'loading'; message: string };
 export class TableDescriptions implements vscode.Disposable {
     private readonly changed = new vscode.EventEmitter<void>();
     readonly onDidChange = this.changed.event;
+    private readonly invalidated = new vscode.EventEmitter<void>();
+    readonly onDidInvalidate = this.invalidated.event;
     private readonly output = vscode.window.createOutputChannel('JSON Reading');
     private readonly subscriptions: vscode.Disposable[] = [];
     private watcher?: vscode.FileSystemWatcher;
@@ -19,6 +21,8 @@ export class TableDescriptions implements vscode.Disposable {
     private updating = false;
 
     get directory(): string { return this.settings().directory; }
+    get tableSettings(): TableSettings { return this.settings(); }
+    get isUpdating(): boolean { return this.updating; }
 
     setUpdating(value: boolean) {
         this.updating = value;
@@ -81,6 +85,7 @@ export class TableDescriptions implements vscode.Disposable {
             watcher.onDidDelete(invalidate);
             this.watcher = watcher;
         }
+        this.invalidated.fire();
         this.changed.fire();
     }
 
@@ -128,6 +133,7 @@ export class TableDescriptions implements vscode.Disposable {
         this.watcher?.dispose();
         this.subscriptions.forEach(item => item.dispose());
         this.changed.dispose();
+        this.invalidated.dispose();
         this.output.dispose();
         this.results.clear();
     }

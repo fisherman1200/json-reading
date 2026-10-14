@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import type { TableView } from './tableDescriptions';
 import { syncTablesCommand, type GitView } from './tableGitController';
+import type { RelationView } from './relationController';
+import { appendFieldRelations, trustHoverCommands } from './relationHover';
 
 export const openWorkbookCommand = 'json-reading.openSourceWorkbook';
 
@@ -11,33 +13,32 @@ function escapeCell(text: string): string {
 }
 
 /** 表格内容一律作为纯文本追加，避免策划说明中的 Markdown 或链接被执行/渲染。 */
-export function createFieldHover(fields: string[], table?: TableView, git?: GitView): vscode.MarkdownString {
-    const label = fields.map(field => JSON.stringify(field).slice(1, -1)).join(' · ');
+export function createFieldHover(fields: string[], table?: TableView, git?: GitView, relations?: RelationView): vscode.MarkdownString {
     // Markdown 忽略开头的普通换行，用空白段落与 GitLens 内容隔开。
-    const hover = new vscode.MarkdownString().appendMarkdown('&nbsp;\n\n').appendText(`字段名：${label}`);
-    if (table?.state === 'ready') {
-        for (const field of fields) {
-            const details = table.fields?.get(field);
-            if (!details) { continue; }
-            if (fields.length > 1) { hover.appendText(`     ${field}`); }
-            if (details.description) { hover.appendText(`    描述：${details.description}`); }
-            if (details.detail && details.detail !== details.description) {
-                // 两列布局让每行备注从同一位置开始，不依赖字体宽度或手动补空格。
-                hover.supportHtml = true;
-                const rows = details.detail.split(/\r\n|\r|\n/).map((line, index) =>
-                    `<tr><td>${index === 0 ? '备注：' : ''}</td><td>${escapeCell(line) || '&nbsp;'}</td></tr>`
-                ).join('');
-                hover.appendMarkdown(`\n\n<table><tbody>${rows}</tbody></table>\n\n`);
-            }
+    const hover = new vscode.MarkdownString().appendMarkdown('&nbsp;\n\n');
+    for (const [index, field] of fields.entries()) {
+        if (index) { hover.appendMarkdown('\n\n'); }
+        hover.appendText(`字段名：${JSON.stringify(field).slice(1, -1)}`);
+        const details = table?.state === 'ready' ? table.fields?.get(field) : undefined;
+        if (details?.description) { hover.appendText(`    描述：${details.description}`); }
+        appendFieldRelations(hover, field, relations, openWorkbookCommand);
+        if (details?.detail && details.detail !== details.description) {
+            // 两列布局让每行备注从同一位置开始，不依赖字体宽度或手动补空格。
+            hover.supportHtml = true;
+            const rows = details.detail.split(/\r\n|\r|\n/).map((line, index) =>
+                `<tr><td>${index === 0 ? '备注：' : ''}</td><td>${escapeCell(line) || '&nbsp;'}</td></tr>`
+            ).join('');
+            hover.appendMarkdown(`\n\n<table><tbody>${rows}</tbody></table>\n\n`);
         }
+    }
+    if (table?.state === 'ready') {
         if (table.source) {
             // 只信任扩展自己的打开命令；参数编码可保留中文、空格和路径中的特殊字符。
             const target = `command:${openWorkbookCommand}?${encodeURIComponent(JSON.stringify([table.source.file, table.source.sheet]))}`;
-            const filename = new vscode.MarkdownString().appendText(path.basename(table.source.file)).value;
-            hover.isTrusted = { enabledCommands: [openWorkbookCommand] };
+            const label = new vscode.MarkdownString().appendText(`${path.basename(table.source.file)} / ${table.source.sheet}`).value;
+            trustHoverCommands(hover, openWorkbookCommand);
             hover.appendText('\n\n来源：');
-            hover.appendMarkdown(`[${filename}](${target} "打开源工作簿并切换到对应页签")`);
-            hover.appendText(` / ${table.source.sheet}`);
+            hover.appendMarkdown(`[${label}](${target} "打开源工作簿并切换到对应页签")`);
         }
     } else if (table?.message) {
         hover.appendText(`\n\n${table.message}`);
@@ -50,7 +51,7 @@ export function createFieldHover(fields: string[], table?: TableView, git?: GitV
             hover.appendText('正在更新策划表…');
         } else {
             const target = `command:${syncTablesCommand}?${encodeURIComponent(JSON.stringify([git.file]))}`;
-            hover.isTrusted = { enabledCommands: [openWorkbookCommand, syncTablesCommand] };
+            trustHoverCommands(hover, syncTablesCommand);
             hover.appendMarkdown(`[$(sync)](${target} "切换到 JSON 同名分支并 Fetch / Pull 策划表")  `);
             if (git.jsonBranch !== undefined && git.tableBranch !== undefined) {
                 if (!git.jsonBranch || git.jsonBranch !== git.tableBranch) {

@@ -44,6 +44,15 @@ export class TableIndex {
 
     constructor(readonly settings: TableSettings, private log: (message: string) => void = () => {}) {}
 
+    /** 关联搜索覆盖全部页签，注册名仅用于标识；未注册但有 ID 列的页签也可匹配。 */
+    async sources(): Promise<(TableSource & { names: string[] })[]> {
+        this.index ??= this.build();
+        const { registry, sheets } = await this.index;
+        return [...sheets].flatMap(([sheet, files]) => files.map(file => ({
+            file, sheet, names: [...registry].filter(([, names]) => names.has(sheet)).map(([name]) => name)
+        })));
+    }
+
     private async build() {
         const files = await workbookFiles(this.settings.directory);
         const registries = this.settings.registry

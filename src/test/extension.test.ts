@@ -1,7 +1,11 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import * as path from 'node:path';
 import { createFieldHover, openWorkbookCommand } from '../fieldHover';
 import { HoverRefresh } from '../hoverRefresh';
+import { resolveRelationDocument } from '../relationDocument';
+import { relationCommands, type RelationView } from '../relationController';
+import { addCandidates, emptyRules, parseRelations, fieldKey, targetKey, ruleKey, type TargetData, type TargetRule } from '../relations';
 
 // 在真实 VS Code 扩展宿主中验证激活与命令切换；不检查最终像素布局。
 suite('JSON field hints', () => {
@@ -32,6 +36,113 @@ suite('JSON field hints', () => {
 
 
 suite('策划表悬浮提示', () => {
+    test('关联按钮兼容 URI 编码、对象和 Windows 盘符大小写，不误操作当前其他文档', () => {
+        const document = { uri: vscode.Uri.file('D:\\项目 空格\\ConfigData.json'), languageId: 'json' } as vscode.TextDocument;
+        const other = { uri: vscode.Uri.file('D:\\Other.json'), languageId: 'json' } as vscode.TextDocument;
+        for (const argument of [document.uri.toString(), document.uri.toString(true), document.uri, document.uri.toJSON(), document.uri.fsPath]) {
+            assert.strictEqual(resolveRelationDocument(argument, [document, other], other), document);
+        }
+        if (process.platform === 'win32') {
+            assert.strictEqual(resolveRelationDocument('file:///d:/项目%20空格/configdata.json', [document]), document);
+        }
+        assert.strictEqual(resolveRelationDocument(undefined, [document], document), document);
+        assert.throws(() => resolveRelationDocument('file:///d:/Missing.json', [document, other], other), /未打开/);
+        const mapping = { uri: vscode.Uri.file('D:\\cn\\extensions\\json_reading\\relations.json'), languageId: 'json' } as vscode.TextDocument;
+        assert.throws(() => resolveRelationDocument(mapping.uri, [mapping]), /匹配表自身/);
+    });
+    test('关联紧随字段描述显示，表名链接打开 Excel，中文保留且多字段互不串行', () => {
+        const parsed = parseRelations('[["ID","Item","Name"],[1,100,"i18n_1"]]');
+        const target = { file: 'Data/矿石[1].xlsm', sheet: '矿石', names: ['oreconfig'] };
+        const data: TargetData[] = [{ target, rows: new Map([['100', [{ id: '100', row: 6, values: [['Name', '铁矿']] }]]]) }];
+        const rules = addCandidates(emptyRules(), parsed, data, true);
+        const view: RelationView = { uri: 'file:///project/TestData.json', cells: parsed.cells,
+            state: { tableDirectory: path.resolve('策划表'), parsed, rules, data, translations: new Map([['i18n_1', '[不执行](command:bad)']]), loading: false } };
+        const hover = createFieldHover(['ID', 'Item', 'Name'], { state: 'ready', fields: new Map([
+            ['Item', { description: '奖励道具', detail: '道具备注' }], ['Name', { description: '名称', detail: '' }]
+        ]) }, { file: '/project/TestData.json', jsonBranch: 'main', tableBranch: 'main' }, view);
+        assert.ok(hover.value.includes('已匹配：'));
+        assert.ok(hover.value.includes('中文：'));
+        assert.ok(hover.value.indexOf('奖励道具') < hover.value.indexOf('已匹配：'));
+        assert.ok(hover.value.indexOf('已匹配：') < hover.value.indexOf('道具备注'));
+        assert.ok(hover.value.indexOf('道具备注') < hover.value.indexOf('字段名：Name'));
+        for (const obsolete of ['关联查询', 'Item：100', '铁矿', '匹配记录', '全部字段', 'Data/矿石']) {
+            assert.ok(!hover.value.includes(obsolete), obsolete);
+        }
+        assert.ok(!hover.value.includes('[不执行](command:bad)'));
+        const match = hover.value.match(/command:json-reading\.decideRelation\?([^\s)]+)/);
+        assert.ok(match);
+        assert.deepStrictEqual(JSON.parse(decodeURIComponent(match[1])), [view.uri, fieldKey(1, 'Item'), [targetKey(target)], 'accepted']);
+        const workbook = hover.value.match(/command:json-reading\.openSourceWorkbook\?([^\s)]+)/)!;
+        assert.deepStrictEqual(JSON.parse(decodeURIComponent(workbook[1])), [path.resolve(view.state.tableDirectory, target.file), target.sheet]);
+        assert.ok(!hover.value.includes('command:json-reading.rescanRelations'));
+        const clear = hover.value.match(/command:json-reading\.clearRelations\?([^\s)]+)/)!;
+        assert.deepStrictEqual(JSON.parse(decodeURIComponent(clear[1])), [view.uri]);
+        const trusted = typeof hover.isTrusted === 'object' ? hover.isTrusted.enabledCommands : [];
+        for (const command of [openWorkbookCommand, relationCommands.decide, relationCommands.clear, 'json-reading.syncTables']) {
+            assert.ok(trusted?.includes(command));
+        }
+        assert.ok(!trusted?.includes(relationCommands.details));
+        assert.ok(hover.value.includes('color:#388a34;'));
+        assert.ok(hover.value.includes('color:#f14c4c;'));
+        rules.fields[fieldKey(1, 'Item')].targets[targetKey(target)].decision = 'rejected';
+        const excluded = createFieldHover(['Item'], undefined, undefined, view);
+        assert.ok(!excluded.value.includes('已匹配：'));
+        assert.ok(excluded.value.includes('无匹配'));
+        assert.ok(!createFieldHover(['ID'], undefined, undefined, view).value.includes('json-reading.rescanRelations'));
+        assert.ok(!createFieldHover(['Name'], undefined, undefined, view).value.includes('无匹配'));
+    });
+    test('同页签多个值和适用规则合并一次展示，按钮批量决定且排除不适用规则', () => {
+        const parsed = parseRelations('[["ID","Type","Rewards"],[1,2,"1001:20,1002:30"]]');
+        const target = { file: '矿石.xlsm', sheet: '矿石', names: [], keyField: 'OreID' };
+        const candidate: TargetRule = { target, decision: 'accepted', when: { field: 'Type', values: [2] }, extract: { listSeparator: ',', separator: ':', index: 0 } };
+        const ruleId = ruleKey(target, candidate.when, candidate.extract), field = fieldKey(2, 'Rewards');
+        const another: TargetRule = { ...candidate, when: undefined };
+        const anotherId = ruleKey(target, another.when, another.extract);
+        const inactive: TargetRule = { ...candidate, when: { field: 'Type', values: [3] } };
+        const inactiveId = ruleKey(target, inactive.when, inactive.extract);
+        const rules = emptyRules();
+        rules.fields[field] = { scanned: true, targets: { [ruleId]: candidate, [anotherId]: another, [inactiveId]: inactive } };
+        const data: TargetData[] = [{ target, rows: new Map([
+            ['1001', [{ id: '1001', row: 6, values: [['Name', '铁矿']] }]],
+            ['1002', [{ id: '1002', row: 7, values: [['Name', '铜矿']] }]]
+        ]) }];
+        const view = { uri: 'file:///project/TestData.json', cells: parsed.cells.filter(cell => cell.field === 'Rewards'),
+            state: { tableDirectory: path.resolve('策划表'), parsed, rules, data, translations: new Map<string, string>(), loading: false } };
+        const hover = createFieldHover(['Rewards'], undefined, undefined, view);
+        assert.strictEqual(hover.value.match(/command:json-reading\.openSourceWorkbook\?/g)?.length, 1);
+        assert.strictEqual(hover.value.match(/command:json-reading\.decideRelation\?/g)?.length, 1);
+        assert.ok(!hover.value.includes('Rewards：'));
+        assert.ok(!hover.value.includes('OreID'));
+        const decision = hover.value.match(/command:json-reading\.decideRelation\?([^\s)]+)/)!;
+        assert.deepStrictEqual(JSON.parse(decodeURIComponent(decision[1])), [view.uri, field, [ruleId, anotherId], 'rejected']);
+        data[0].rows.clear();
+        assert.ok(createFieldHover(['Rewards'], undefined, undefined, view).value.includes('无匹配'));
+    });
+    test('加载失败和加载中不误报无匹配，匹配只依据当前单元格', () => {
+        const parsed = parseRelations('[["ID","Item"],[1,100],[2,200]]');
+        const target = { file: '矿石.xlsm', sheet: '矿石', names: [] };
+        const data: TargetData[] = [{ target, rows: new Map([['200', [{ id: '200', row: 6, values: [] }]]]) }];
+        const rules = addCandidates(emptyRules(), parsed, data, true);
+        const view: RelationView = { uri: 'file:///project/TestData.json', cells: [parsed.cells[0]],
+            state: { tableDirectory: path.resolve('策划表'), parsed, rules, data, translations: new Map(), loading: false } };
+        assert.ok(createFieldHover(['Item'], undefined, undefined, view).value.includes('无匹配'));
+        view.state.loading = true;
+        const loading = createFieldHover(['Item'], undefined, undefined, view);
+        assert.ok(loading.value.includes('正在读取关联'));
+        assert.ok(!loading.value.includes('无匹配'));
+        assert.ok(!loading.value.includes('command:json-reading.rescanRelations'));
+        view.state.loading = false;
+        view.state.error = '源工作簿暂时不可读取';
+        const failed = createFieldHover(['Item'], undefined, undefined, view);
+        assert.ok(failed.value.includes('源工作簿暂时不可读取'));
+        assert.ok(!failed.value.includes('无匹配'));
+        const translated = parseRelations('[["ID","Name"],[1,"i18n_1"]]');
+        const translationView: RelationView = { ...view, cells: translated.cells, state: { ...view.state, parsed: translated, error: undefined, translationError: '翻译文件无法读取' } };
+        const failedTranslation = createFieldHover(['Name'], undefined, undefined, translationView);
+        assert.ok(failedTranslation.value.includes('翻译文件无法读取'));
+        assert.ok(!failedTranslation.value.includes('未找到对应'));
+        assert.ok(!failedTranslation.value.includes('无匹配'));
+    });
     test('自动重开支持行中光标，不改变选区，切换文件后释放临时内容', async () => {
         const document = await vscode.workspace.openTextDocument({ language: 'json', content: '[["ID"],[123]]' });
         const editor = await vscode.window.showTextDocument(document);
