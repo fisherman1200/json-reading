@@ -3,30 +3,51 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { TableDescriptions } from './tableDescriptions';
-import { addCandidates, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules,
-    type RelationCell, type RelationDocument, type RelationRules, type TargetData } from './relations';
+import { addCandidates, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules, valuesForRule, relationCellsInRange,
+    type RelationCell, type RelationDocument, type RelationRules, type TargetData, type RelationTarget, type RelationRow } from './relations';
 import { configName } from './tableIndex';
 import { RelationStore, isRelationFile, normalizeRules } from './relationStore';
 import { resolveRelationDocument } from './relationDocument';
+import { RelationCascade, type CascadeRow } from './relationCascade';
+import { RelationExpansionState, cascadeRootKey, cascadeBranchKeys } from './relationExpansion';
 
 export const relationCommands = {
     decide: 'json-reading.decideRelation', rescan: 'json-reading.rescanRelations',
-    clear: 'json-reading.clearRelations', details: 'json-reading.relationDetails'
+    clear: 'json-reading.clearRelations', details: 'json-reading.relationDetails',
+    toggle: 'json-reading.toggleRelationExpansion'
 };
 export interface RelationState {
     parsed: RelationDocument; rules: RelationRules; data: TargetData[];
     translations: Map<string, string>; loading: boolean; tableDirectory: string; error?: string; translationError?: string;
 }
-export interface RelationView { uri: string; cells: RelationCell[]; state: RelationState }
+export interface RelationResult {
+    field: string; column: number; target: RelationTarget; id: string; rows: RelationRow[]; loading: boolean; error?: string;
+    expandedRows?: CascadeRow[];
+}
+export interface RelationView {
+    uri: string; cells: RelationCell[]; state: RelationState; results?: RelationResult[];
+    expansion?: { version: number; line: number; expanded: ReadonlySet<string>; collapsed?: ReadonlySet<string> };
+}
 class RelationActionCancelled extends Error {}
 
 /** 每个项目共用一个匹配文件，内部按源 JSON 相对路径隔离。 */
 export class RelationController implements vscode.Disposable {
     private readonly changed = new vscode.EventEmitter<string>();
     readonly onDidChange = this.changed.event;
+    private readonly expansionChanged = new vscode.EventEmitter<{ uri: string; line: number; version: number }>();
+    readonly onDidToggleExpansion = this.expansionChanged.event;
+    private readonly expansion: RelationExpansionState;
     private readonly subscriptions: vscode.Disposable[] = [];
     private readonly states = new Map<string, { version: number; state: RelationState }>();
     private readonly parsedDocuments = new Map<string, { version: number; parsed: RelationDocument }>();
+    private readonly detailViews = new WeakMap<RelationState, {
+        epoch: number | undefined; index: RelationIndex; rules: RelationRules; revision: number;
+        lines: Map<number, RelationResult[]>; cascade?: Promise<RelationCascade>;
+    }>();
+    private readonly detailNotifications = new Map<string, { timer: ReturnType<typeof setTimeout>; lines: Map<number, () => boolean> }>();
+    private readonly cascadeWatchers = new Set<string>();
+    private cascadeInvalidation?: ReturnType<typeof setTimeout>;
+    private cascadeRevision = 0;
     private readonly epochs = new Map<string, number>();
     private index?: RelationIndex;
     private disposed = false;
@@ -37,12 +58,8 @@ export class RelationController implements vscode.Disposable {
     private readonly storeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
     constructor(private readonly context: vscode.ExtensionContext, private readonly tables: TableDescriptions) {
-        const invalidate = () => {
-            this.index = undefined;
-            for (const uri of this.states.keys()) { this.bump(uri); }
-            this.states.clear();
-            this.changed.fire('');
-        };
+        this.expansion = new RelationExpansionState(context.workspaceState);
+        const invalidate = () => this.invalidate();
         const guarded = (action: (...args: unknown[]) => Promise<string | void>, title?: string | ((...args: unknown[]) => string)) => async (...args: unknown[]) => {
             try {
                 if (!vscode.workspace.isTrusted) { throw new Error('请先信任当前工作区。'); }
@@ -54,7 +71,7 @@ export class RelationController implements vscode.Disposable {
                 const message = await operation;
                 if (message) { void vscode.window.showInformationMessage(message); }
             } catch (error) {
-                const message = `关联查询：${error instanceof Error ? error.message : String(error)}`;
+                const message = `关联查询: ${error instanceof Error ? error.message : String(error)}`;
                 if (error instanceof RelationActionCancelled) { void vscode.window.showWarningMessage(message); }
                 else { void vscode.window.showErrorMessage(message); }
             }
@@ -71,13 +88,67 @@ export class RelationController implements vscode.Disposable {
             vscode.commands.registerCommand(relationCommands.decide, guarded((...args) => this.decide(...args), (...args) => args[3] === 'accepted' ? '正在确认关联…' : '正在排除关联…')),
             vscode.commands.registerCommand(relationCommands.rescan, guarded((value, field) => this.rescan(value, field), '正在全搜索当前字段关联…')),
             vscode.commands.registerCommand(relationCommands.clear, guarded(value => this.clear(value), '正在清空当前 JSON 的匹配表…')),
-            vscode.commands.registerCommand(relationCommands.details, guarded((...args) => this.details(...args)))
+            vscode.commands.registerCommand(relationCommands.details, guarded((...args) => this.details(...args))),
+            vscode.commands.registerCommand(relationCommands.toggle, guarded((value, version, line, key, expanded) => this.toggleExpansion(value, version, line, key, expanded)))
         );
         const watcher = vscode.workspace.createFileSystemWatcher('**/i18zhConfigData.json');
         this.subscriptions.push(watcher, watcher.onDidChange(invalidate), watcher.onDidCreate(invalidate), watcher.onDidDelete(invalidate));
     }
 
-    private bump(uri: string) { const next = (this.epochs.get(uri) ?? 0) + 1; this.epochs.set(uri, next); return next; }
+    private invalidate() {
+        this.index = undefined;
+        for (const uri of this.states.keys()) { this.bump(uri); }
+        this.states.clear();
+        this.changed.fire('');
+    }
+
+    /** 目标 JSON 可以在工作区外；只监听级联实际读取的文件，保存/拉取后废弃旧结果。 */
+    private watchCascade(cascade: RelationCascade) {
+        if (this.disposed) { return; }
+        for (const file of cascade.dependencies) {
+            const key = process.platform === 'win32' ? file.toLowerCase() : file;
+            if (this.cascadeWatchers.has(key)) { continue; }
+            this.cascadeWatchers.add(key);
+            const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(path.dirname(file), path.basename(file)));
+            const changed = () => {
+                clearTimeout(this.cascadeInvalidation);
+                this.cascadeInvalidation = setTimeout(() => { if (!this.disposed) { this.invalidate(); } }, 150);
+            };
+            this.subscriptions.push(watcher, watcher.onDidChange(changed), watcher.onDidCreate(changed), watcher.onDidDelete(changed));
+        }
+    }
+
+    private async cascadeFor(document: vscode.TextDocument, index: RelationIndex, valid: () => boolean) {
+        const store = await this.storeFor(document);
+        this.ensureCurrent(valid);
+        const rules = await store.snapshot();
+        this.ensureCurrent(valid);
+        const configured = vscode.workspace.getConfiguration('json-reading.relations', document).get<string>('i18nFile', '').trim();
+        return new RelationCascade({ index, root: store.root, sourceFile: document.uri.fsPath, rules,
+            i18nFile: configured ? path.resolve(path.dirname(document.uri.fsPath), configured) : undefined });
+    }
+
+    private bump(uri: string) {
+        clearTimeout(this.detailNotifications.get(uri)?.timer);
+        this.detailNotifications.delete(uri);
+        const next = (this.epochs.get(uri) ?? 0) + 1; this.epochs.set(uri, next); return next;
+    }
+    private notifyDetails(uri: string, line: number, valid: () => boolean) {
+        // 同次渲染的多个行/目标通常一起完成，只刷新一次，避免 Hover 连续重开。
+        const lines = this.detailNotifications.get(uri)?.lines ?? new Map<number, () => boolean>();
+        lines.set(line, valid);
+        clearTimeout(this.detailNotifications.get(uri)?.timer);
+        const entry = { lines, timer: setTimeout(() => {
+            if (this.detailNotifications.get(uri) !== entry) { return; }
+            this.detailNotifications.delete(uri);
+            const completed = new Set([...lines].filter(([, current]) => current()).map(([line]) => line));
+            if (!completed.size) { return; }
+            // 其他可见行稍后完成只重绘装饰，不能反复关闭/重开当前行 Hover。
+            const editor = vscode.window.activeTextEditor;
+            this.changed.fire(editor?.document.uri.toString() === uri && completed.has(editor.selection.active.line) ? uri : '');
+        }, 0) };
+        this.detailNotifications.set(uri, entry);
+    }
     private ensureCurrent(valid: () => boolean) {
         if (!valid()) { throw new RelationActionCancelled('文档或索引已变化，本次操作已结束，请重新查看后再操作。'); }
     }
@@ -149,6 +220,8 @@ export class RelationController implements vscode.Disposable {
             const exists = await store.read(document.uri.fsPath);
             this.ensureCurrent(valid);
             await store.write(document.uri.fsPath, next, exists ? base : emptyRules());
+            // 任意目标 JSON 的规则变化，也会影响其他 JSON 已展开的下级关联。
+            this.cascadeRevision++;
             this.storeContents.set(store.file, await fs.readFile(store.file, 'utf8'));
             await this.context.workspaceState.update(this.legacyKey(uri), undefined);
             this.ensureCurrent(valid);
@@ -179,11 +252,104 @@ export class RelationController implements vscode.Disposable {
         if (isRelationFile(document.uri.fsPath)) { return; }
         const start = document.offsetAt(new vscode.Position(line, 0));
         const end = document.offsetAt(document.lineAt(line).range.end);
-        const cells = this.parsed(document).cells.filter(cell => cell.start <= end && cell.end > start);
+        const cells = relationCellsInRange(this.parsed(document), start, end);
         // 只查看首列 ID 时不触发任何关联 I/O。
         if (!cells.length) { return; }
         const state = this.get(document);
-        return state ? { uri: document.uri.toString(), cells, state } : undefined;
+        return state ? { uri: document.uri.toString(), cells, state, results: this.results(document, line, cells, state),
+            expansion: { version: document.version, line, expanded: this.expansion.get(document.uri.toString()),
+                collapsed: this.expansion.getCollapsed(document.uri.toString()) } } : undefined;
+    }
+
+    /** 展开只是个人显示偏好，不修改共享匹配表，也不重新扫描或读取已缓存的记录。 */
+    private async toggleExpansion(value: unknown, version: unknown, line: unknown, key: unknown, expanded: unknown) {
+        const document = this.document(value), uri = document.uri.toString();
+        if (typeof version !== 'number' || version !== document.version || document.isClosed || this.disposed) {
+            throw new RelationActionCancelled('文档已变化，请重新查看后再展开或收起。');
+        }
+        if (typeof line !== 'number' || !Number.isInteger(line) || line < 0 || line >= document.lineCount
+            || typeof key !== 'string' || typeof expanded !== 'boolean') { throw new Error('展开参数无效。'); }
+        const view = this.view(document, line);
+        const validKey = view?.results?.some(result => !result.loading && cascadeBranchKeys(result.expandedRows ?? [],
+            cascadeRootKey(result.column, result.field, result.target)).has(key));
+        if (!validKey) { throw new RelationActionCancelled('当前关联已变化，请重新查看后再展开或收起。'); }
+        const epoch = this.epochs.get(uri), revision = this.cascadeRevision;
+        await this.expansion.set(uri, key, expanded);
+        if (this.disposed || document.isClosed || document.version !== version || this.epochs.get(uri) !== epoch
+            || this.cascadeRevision !== revision) { return; }
+        this.changed.fire('');
+        this.expansionChanged.fire({ uri, line, version });
+    }
+
+    /** 完整关联行只随当前视图请求，文档级加载仍仅保留轻量摘要。 */
+    private results(document: vscode.TextDocument, line: number, cells: RelationCell[], state: RelationState): RelationResult[] | undefined {
+        const index = this.index;
+        if (state.loading || !index || this.tables.isUpdating) { return; }
+        const uri = document.uri.toString(), epoch = this.epochs.get(uri), version = document.version;
+        let cached = this.detailViews.get(state);
+        if (!cached || cached.epoch !== epoch || cached.rules !== state.rules || cached.index !== index || cached.revision !== this.cascadeRevision) {
+            cached = { epoch, index, rules: state.rules, revision: this.cascadeRevision, lines: new Map() };
+            this.detailViews.set(state, cached);
+        }
+        const previous = cached.lines.get(line);
+        if (previous) { return previous; }
+        const results: RelationResult[] = [];
+        cached.lines.set(line, results);
+        const tables = new Map(state.data.map(table => [targetKey(table.target), table]));
+        const groups = new Map<string, { target: RelationTarget; results: RelationResult[] }>();
+        const identities = new Set<string>();
+        for (const cell of cells) {
+            if (cell.column === 0) { continue; }
+            const field = fieldKey(cell.column, cell.field);
+            for (const candidate of Object.values(state.rules.fields[field]?.targets ?? {})) {
+                if (candidate.decision === 'rejected') { continue; }
+                const key = targetKey(candidate.target), table = tables.get(key);
+                if (!table) { continue; }
+                for (const id of valuesForRule(cell, candidate)) {
+                    if (id.startsWith('i18n_') || !table.rows.get(id)?.length) { continue; }
+                    const identity = JSON.stringify([field, key, id]);
+                    if (identities.has(identity)) { continue; }
+                    identities.add(identity);
+                    const result: RelationResult = { field: cell.field, column: cell.column, target: candidate.target, id, rows: [], loading: true };
+                    results.push(result);
+                    let group = groups.get(key);
+                    if (!group) { group = { target: candidate.target, results: [] }; groups.set(key, group); }
+                    group.results.push(result);
+                }
+            }
+        }
+        const valid = () => !this.disposed && !document.isClosed && document.version === version && this.epochs.get(uri) === epoch
+            && this.states.get(uri)?.state === state && this.index === index && this.detailViews.get(state) === cached && cached.rules === state.rules
+            && cached.revision === this.cascadeRevision;
+        for (const group of groups.values()) {
+            void index.recordsMany(group.target, new Set(group.results.map(result => result.id))).then(async records => {
+                if (!valid()) { return; }
+                for (const result of group.results) {
+                    result.rows = records.get(result.id) ?? [];
+                }
+                cached.cascade ??= this.cascadeFor(document, index, valid);
+                const cascade = await cached.cascade;
+                this.ensureCurrent(valid);
+                let expanded: CascadeRow[];
+                try { expanded = await cascade.expand(group.target, [...records.values()].flat(), valid); }
+                finally { if (valid()) { this.watchCascade(cascade); } }
+                if (!valid()) { return; }
+                for (const result of group.results) {
+                    result.expandedRows = expanded.filter(row => row.id === result.id);
+                    result.loading = false;
+                    if (!result.rows.length) { result.error = '未读取到完整关联记录，请刷新策划表索引。'; }
+                }
+                this.notifyDetails(uri, line, valid);
+            }).catch(error => {
+                if (!valid()) { return; }
+                for (const result of group.results) {
+                    result.loading = false;
+                    result.error = error instanceof Error ? error.message : String(error);
+                }
+                this.notifyDetails(uri, line, valid);
+            });
+        }
+        return results;
     }
 
     private async load(document: vscode.TextDocument, state: RelationState, scanField?: string) {
@@ -201,7 +367,7 @@ export class RelationController implements vscode.Disposable {
                 const file = configured ? path.resolve(path.dirname(document.uri.fsPath), configured)
                     : path.join(path.dirname(document.uri.fsPath), 'i18zhConfigData.json');
                 try { state.translations = await readTranslations(file); }
-                catch (error) { state.translationError = `中文表读取失败：${error instanceof Error ? error.message : String(error)}`; }
+                catch (error) { state.translationError = `中文表读取失败: ${error instanceof Error ? error.message : String(error)}`; }
                 if (valid()) { this.changed.fire(uri); }
             }
             this.ensureCurrent(valid);
@@ -225,7 +391,7 @@ export class RelationController implements vscode.Disposable {
                 state.data = loaded.flatMap(item => item.status === 'fulfilled' ? [item.value] : []);
                 const failed = loaded.flatMap(item => item.status === 'rejected' ? [item.reason instanceof Error ? item.reason.message : String(item.reason)] : []);
                 if (failed.length) {
-                    state.error = `部分关联表读取失败：${[...new Set(failed)].join('；')}`;
+                    state.error = `部分关联表读取失败: ${[...new Set(failed)].join('；')}`;
                     if (rescan) { throw new Error(state.error); }
                 }
             }
@@ -233,7 +399,7 @@ export class RelationController implements vscode.Disposable {
             if (rescan) { await this.save(uri, rules, valid); }
             this.ensureCurrent(valid);
         } catch (error) {
-            if (valid()) { state.error = `关联搜索失败：${error instanceof Error ? error.message : String(error)}（未将失败记为空结果）`; }
+            if (valid()) { state.error = `关联搜索失败: ${error instanceof Error ? error.message : String(error)}（未将失败记为空结果）`; }
             if (rescan) { throw error; }
         } finally {
             if (valid()) { state.loading = false; this.changed.fire(uri); }
@@ -251,6 +417,18 @@ export class RelationController implements vscode.Disposable {
         if (!state) { throw new Error('当前文件没有可操作的数据字段；首列 ID 不参与关联查询。'); }
         if (state.loading) { throw new Error('关联数据正在读取，请完成后重试。'); }
         return state;
+    }
+
+    private async saveAction(uri: string, epoch: number, rules: RelationRules | undefined, valid: () => boolean) {
+        try { await this.save(uri, rules, valid); }
+        catch (error) {
+            // 操作开始已废弃旧请求；保存失败后重新读盘，不能留下永久 loading 的旧视图。
+            if (!this.disposed && this.epochs.get(uri) === epoch) {
+                this.states.delete(uri);
+                this.changed.fire(uri);
+            }
+            throw error;
+        }
     }
 
     private async scanField(document: vscode.TextDocument, parsed: RelationDocument, requested: unknown): Promise<string> {
@@ -286,7 +464,7 @@ export class RelationController implements vscode.Disposable {
         const next = decideRelationRules(state.rules, field, keys, decision);
         const id = document.uri.toString(), epoch = this.bump(id), version = document.version;
         const valid = () => !this.disposed && !document.isClosed && this.epochs.get(id) === epoch && document.version === version;
-        await this.save(id, next, valid);
+        await this.saveAction(id, epoch, next, valid);
         this.ensureCurrent(valid);
         this.changed.fire(id);
         return `${decision === 'accepted' ? '已确认' : '已排除'}字段「${JSON.parse(field)[1]}」的关联。`;
@@ -311,7 +489,7 @@ export class RelationController implements vscode.Disposable {
         if (this.disposed) { throw new Error('扩展已关闭，请重新加载窗口。'); }
         if (this.tables.isUpdating) { throw new Error('策划表正在更新，请完成后重试。'); }
         const valid = () => !this.disposed && !document.isClosed && this.epochs.get(uri) === epoch && document.version === version;
-        await this.save(uri, undefined, valid);
+        await this.saveAction(uri, epoch, undefined, valid);
         this.ensureCurrent(valid);
         this.states.delete(uri);
         this.changed.fire(uri);
@@ -331,8 +509,11 @@ export class RelationController implements vscode.Disposable {
 
     dispose() {
         this.disposed = true;
+        clearTimeout(this.cascadeInvalidation);
+        this.detailNotifications.forEach(entry => clearTimeout(entry.timer));
+        this.detailNotifications.clear();
         this.storeTimers.forEach(timer => clearTimeout(timer));
         this.subscriptions.forEach(item => item.dispose());
-        this.states.clear(); this.parsedDocuments.clear(); this.changed.dispose();
+        this.states.clear(); this.parsedDocuments.clear(); this.changed.dispose(); this.expansionChanged.dispose();
     }
 }

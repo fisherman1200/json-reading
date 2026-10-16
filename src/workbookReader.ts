@@ -141,7 +141,7 @@ export async function readSheetRows(file: string, sheetName: string, maxRow: num
     const workbook = await WorkbookZip.open(file);
     try {
         const sheet = (await workbook.sheets()).find(sheet => sheet.name === sheetName);
-        if (!sheet) { throw new Error(`找不到页签：${sheetName}`); }
+        if (!sheet) { throw new Error(`找不到页签: ${sheetName}`); }
         return await workbook.rows(sheet, maxRow);
     } finally { workbook.close(); }
 }

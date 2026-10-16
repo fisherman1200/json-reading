@@ -55,8 +55,8 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         const mode = modeFor(editor.document);
-        status.text = `$(list-selection) 字段名：${mode === 'all' ? '全部行' : '选中行'}`;
-        status.tooltip = '点击切换 JSON 字段名提示：全部行 / 仅选中行';
+        status.text = `$(list-selection) 字段名: ${mode === 'all' ? '全部行' : '选中行'}`;
+        status.tooltip = '点击切换 JSON 字段名提示: 全部行 / 仅选中行';
         status.show();
     }
 
@@ -132,8 +132,8 @@ export function activate(context: vscode.ExtensionContext) {
         const table = descriptions.get(hoverAfterLoad);
         const git = editor.document.uri.scheme === 'file' ? tableGit.get(hoverAfterLoad) : undefined;
         const relation = relations.view(editor.document, editor.selection.active.line);
-        // 等待字段与分支两个异步查询都完成，避免重新打开的仍然是“正在读取”。
-        if (table?.state === 'loading' || git?.loading || git?.busy || relation?.state.loading || pending.has(editor.document)) { return; }
+        // 完整关联行按视图加载，也需等待读取完成再重开，避免展示空摘要。
+        if (table?.state === 'loading' || git?.loading || git?.busy || relation?.state.loading || relation?.results?.some(result => result.loading) || pending.has(editor.document)) { return; }
         hoverAfterLoad = undefined;
         if ((!table && !relation) || !vscode.window.state.focused) { return; }
         const fields = cache.get(editor.document)?.hints.get(editor.selection.active.line);
@@ -148,6 +148,19 @@ export function activate(context: vscode.ExtensionContext) {
                 hoverAfterLoad = vscode.window.activeTextEditor.document.uri.fsPath;
             }
             refresh();
+        }),
+        relations.onDidToggleExpansion(({ uri, line, version }) => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.uri.toString() !== uri || editor.document.version !== version
+                || !vscode.window.state.focused || pending.has(editor.document)) { return; }
+            if (editor.selection.active.line !== line) {
+                vscode.window.setStatusBarMessage('已保存展开/收起状态，请重新悬停此行查看。', 3000);
+                return;
+            }
+            const fields = cache.get(editor.document)?.hints.get(line);
+            if (!fields?.length) { return; }
+            void hoverRefresh.show(editor, createFieldHover(fields, descriptions.get(editor.document.uri.fsPath),
+                tableGit.get(editor.document.uri.fsPath), relations.view(editor.document, line)), line);
         }),
         tableGit.onDidSync(file => { hoverAfterLoad = file; refresh(); }),
         tableGit.onDidChange(refresh),
@@ -184,7 +197,7 @@ export function activate(context: vscode.ExtensionContext) {
             } catch (error) {
                 // execFile 的 message 包含整段脚本，优先显示 PowerShell 的实际错误输出。
                 const stderr = (error as { stderr?: string } | null)?.stderr?.trim();
-                void vscode.window.showErrorMessage(`打开策划表失败：${stderr || (error instanceof Error ? error.message : String(error))}`);
+                void vscode.window.showErrorMessage(`打开策划表失败: ${stderr || (error instanceof Error ? error.message : String(error))}`);
             }
         }),
         vscode.commands.registerCommand('json-reading.toggleFieldHintsMode', async () => {

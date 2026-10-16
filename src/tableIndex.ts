@@ -86,9 +86,9 @@ export class TableIndex {
                     owners.push(file);
                     sheets.set(sheet.name, owners);
                 }
-            } catch (error) { failed++; this.log(`无法索引 ${file}：${String(error)}`); }
+            } catch (error) { failed++; this.log(`无法索引 ${file}: ${String(error)}`); }
         }
-        this.log(`索引完成：${files.length} 个工作簿，${registry.size} 个注册项，${failed} 个文件读取失败。`);
+        this.log(`索引完成: ${files.length} 个工作簿，${registry.size} 个注册项，${failed} 个文件读取失败。`);
         // 索引不完整时不能把尚未发现的重名页签误判为唯一匹配。
         if (failed) { throw new Error(`${failed} 个工作簿无法读取，请查看“JSON Reading”输出并刷新索引。`); }
         return { registry, sheets };
@@ -101,7 +101,7 @@ export class TableIndex {
         for (const [column, raw] of rows.get(fieldRow) ?? []) {
             const field = raw.trim();
             if (!field) { continue; }
-            if (fields.has(field)) { throw new Error(`页签 ${source.sheet} 存在重复字段：${field}`); }
+            if (fields.has(field)) { throw new Error(`页签 ${source.sheet} 存在重复字段: ${field}`); }
             fields.set(field, {
                 description: rows.get(descriptionRow)?.get(column)?.trim() ?? '',
                 detail: rows.get(detailRow)?.get(column)?.trim() ?? ''
@@ -121,7 +121,7 @@ export class TableIndex {
             const registryKey = key.replace(/data$/, '');
             const names = registry.get(registryKey);
             if (!names) {
-                return { state: 'missing', message: `注册表中没有此 JSON 的对应记录：${path.basename(jsonFile)}（查找名称：${registryKey}）。` };
+                return { state: 'missing', message: `注册表中没有此 JSON 的对应记录: ${path.basename(jsonFile)}（查找名称: ${registryKey}）。` };
             }
             let candidates: TableSource[] = [...names].flatMap(sheet => (sheets.get(sheet) ?? []).map(file => ({ file, sheet })));
             const override = Object.entries(this.settings.overrides).find(([name]) => configName(name) === key)?.[1];
@@ -129,7 +129,7 @@ export class TableIndex {
                 const selected = path.resolve(this.settings.directory, override);
                 candidates = candidates.filter(source => source.file === selected);
             }
-            if (!candidates.length) { return { state: 'missing', message: `找不到注册页签：${[...names].join('、')}${override ? '（请检查工作簿选择）' : ''}` }; }
+            if (!candidates.length) { return { state: 'missing', message: `找不到注册页签: ${[...names].join('、')}${override ? '（请检查工作簿选择）' : ''}` }; }
             if (candidates.length > 1) {
                 return { state: 'ambiguous', message: '存在同名页签，请运行“JSON Reading: 选择当前 JSON 的策划工作簿”。', candidates };
             }
@@ -140,7 +140,7 @@ export class TableIndex {
             return { state: 'ready', source, fields: await fields };
         } catch (error) {
             this.log(String(error));
-            return { state: 'error', message: `策划表读取失败：${error instanceof Error ? error.message : String(error)}` };
+            return { state: 'error', message: `策划表读取失败: ${error instanceof Error ? error.message : String(error)}` };
         }
     }
 }

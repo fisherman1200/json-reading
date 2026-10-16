@@ -23,7 +23,7 @@ export function resolveRelationDocument(value: unknown, documents: readonly vsco
             return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
         };
         document = documents.find(item => item.uri.scheme === 'file' && key(item.uri.fsPath) === key(uri.fsPath));
-        if (!document) { throw new Error(`按钮对应的文件未打开：${uri.fsPath}。请重新打开该文件的悬浮提示。`); }
+        if (!document) { throw new Error(`按钮对应的文件未打开: ${uri.fsPath}。请重新打开该文件的悬浮提示。`); }
     }
     if (!document) { throw new Error('请先打开需要查询的数据 JSON 文件。'); }
     if (isRelationFile(document.uri.fsPath)) { throw new Error('关联匹配表自身不参与查询，请打开源数据 JSON。'); }

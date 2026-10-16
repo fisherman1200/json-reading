@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { addCandidates, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, type TargetData, type TargetRule } from '../relations';
+import { addCandidates, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
 import { RelationStore, isRelationFile, relationFile, normalizeRules } from '../relationStore';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -140,6 +140,31 @@ test('原生数组明确选取 ID 位置，数量不参与匹配，并可继续�
     assert.throws(() => normalizeRules(invalid), /提取/);
 });
 
+test('嵌套数组按行查询保留原始顶层索引和条件上下文，括号不回退到完整值', () => {
+    const lines = ['[', '["ID","Type","Ref"],', '[1,2,[', '["1001:20",', '"1002:30"],', '["1003:40"]', ']]', ']'];
+    const text = lines.join('\r\n'), parsed = parseRelations(text);
+    const at = (line: number) => {
+        const start = lines.slice(0, line).reduce((offset, value) => offset + value.length + 2, 0);
+        return relationCellsInRange(parsed, start, start + lines[line].length).find(cell => cell.field === 'Ref')!;
+    };
+    const original = parsed.cells.find(cell => cell.field === 'Ref')!;
+    const first: TargetRule = { target: table('道具', []).target, decision: 'accepted', when: { field: 'Type', values: [2] },
+        extract: { arrayIndex: 0, separator: ':', index: 0 } };
+    const second = { ...first, extract: { ...first.extract, arrayIndex: 1 } };
+    assert.deepEqual(valuesForRule(at(3), first), ['1001']);
+    assert.deepEqual(valuesForRule(at(4), first), ['1002']);
+    assert.deepEqual(valuesForRule(at(5), first), []);
+    assert.deepEqual(valuesForRule(at(4), second), []);
+    assert.deepEqual(valuesForRule(at(5), second), ['1003']);
+    assert.deepEqual(valuesForRule(at(6), first), []);
+    assert.deepEqual(valuesForRule(at(4), { ...first, when: { field: 'Type', values: [3] } }), []);
+    assert.deepEqual(at(4).values, ['1002:30']);
+    assert.strictEqual(at(4).raw, original.raw);
+    assert.strictEqual(at(4).row, original.row);
+    assert.deepEqual(valuesForRule(original, first), ['1001', '1002']);
+    assert.deepEqual([...parsed.values.get(fieldKey(2, 'Ref'))!], ['1001:20', '1002:30', '1003:40']);
+});
+
 test('同一目标多条条件规则与不同目标键分别保存；旧规则键保持兼容', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-reading-routing-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -190,6 +215,10 @@ test('共享单文件按源相对路径隔离，重启/项目搬迁保留，清�
     assert.equal(await restarted.read(a), undefined);
     assert.deepEqual(await restarted.read(b), rules);
     assert.deepEqual(await fs.readdir(path.dirname(first.file)), ['relations.json']);
+    const snapshot = await restarted.snapshot();
+    assert.deepEqual(snapshot, { 'B/Same.json': rules });
+    snapshot['B/Same.json'].fields = {};
+    assert.deepEqual(await restarted.read(b), rules);
 });
 
 test('并发窗口合并不同 JSON 与不同目标，冲突决策报错而非覆盖', async t => {

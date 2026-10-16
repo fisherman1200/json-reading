@@ -62,6 +62,20 @@ test('normalizes front/back-end prefixes and JSON/CSV extensions', () => {
     }
 });
 
+test('每层关联说明按 XLSM 字段名读取第 3/2 行，忽略无字段名辅助列并缓存页签', async t => {
+    const { directory, settings } = await fixture(t);
+    const target = { file: 'Data/unknown-name.xlsm', sheet: '奖励', names: [] };
+    const withAuxiliary = dataRows.replace(cell('B3', '奖励类型'), cell('B3', '奖励类型') + cell('Z3', '无字段名的辅助列说明'));
+    await fs.writeFile(path.join(directory, target.file), workbook('奖励', withAuxiliary));
+    const index = new RelationIndex(settings);
+    const first = await index.metadata(target);
+    assert.deepEqual(first.get('Type'), { description: '奖励类型', detail: '第一条\n第二条' });
+    assert.deepEqual(first.get('ID'), { description: '编号', detail: '' });
+    assert.equal(first.size, 2);
+    await fs.writeFile(path.join(directory, target.file), '后续已损坏，不应为同页签再次读取');
+    assert.strictEqual(await index.metadata({ ...target, keyField: 'Type' }), first);
+});
+
 test('关联索引扫描未注册页签，重复 ID 保留全部记录，完整列按需读取', async t => {
     const { directory, settings } = await fixture(t);
     await fs.writeFile(path.join(directory, 'extra.xlsm'), workbook('未注册资源',
@@ -91,6 +105,64 @@ test('关联索引支持明确指定非 ID 键，同页签多个索引互不混�
     const records = await index.records({ ...target, keyField: 'GroupID' }, '8');
     assert.deepEqual(records.map(record => record.values.find(([field]) => field === 'ID')?.[1]), ['100', '200']);
     await assert.rejects(index.read({ ...target, keyField: 'Missing' }), /缺少键字段/);
+});
+
+test('当前视图的多 ID 完整记录批量读取，重复请求共享缓存并保留所有同键行', async t => {
+    const { directory, settings } = await fixture(t);
+    const headers = `<row r="5">${cell('A5', 'ID')}${cell('B5', 'itemId')}${cell('C5', 'range')}${cell('D5', 'fix')}</row>`;
+    const data = [
+        ['100', '501', '1:5', '0'], ['100', '502', '5:10', '1'], ['200', '503', '2:8', ''],
+        ['300', '504', '10:20', '0'], ['400', '505', '20:30', '1']
+    ].map((row, index) => `<row r="${index + 6}">${row.map((value, column) => cell(`${String.fromCharCode(65 + column)}${index + 6}`, value)).join('')}</row>`).join('');
+    await fs.writeFile(path.join(directory, 'details.xlsm'), workbook('明细', headers + data));
+    const index = new RelationIndex(settings), target = { file: 'details.xlsm', sheet: '明细', names: [] };
+    const summary = await index.read(target);
+    assert.deepEqual(summary.rows.get('100')?.[0].values, []);
+    // 替换模块边界计数，仍读取真实的最小 XLSM 夹具。
+    const reader = require('../workbookReader') as typeof import('../workbookReader');
+    const original = reader.readSheetRows;
+    let reads = 0;
+    t.mock.method(reader, 'readSheetRows', (...args: Parameters<typeof original>) => { reads++; return original(...args); });
+    const first = index.recordsMany(target, ['100', '100', '200']);
+    const second = index.recordsMany(target, ['200', '300']);
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(reads, 1);
+    assert.deepEqual([...a.keys()], ['100', '200']);
+    assert.equal(a.get('100')?.length, 2);
+    assert.deepEqual(a.get('100')![0].values, [['ID', '100'], ['itemId', '501'], ['range', '1:5'], ['fix', '0']]);
+    assert.equal(a.get('100')![1].values[1][1], '502');
+    assert.equal(a.get('200')![0].values[3][1], '');
+    assert.strictEqual(a.get('200'), b.get('200'));
+    assert.strictEqual(await index.records(target, '100'), a.get('100'));
+    assert.deepEqual((await index.recordsMany(target, ['missing'])).get('missing'), []);
+    assert.equal(reads, 1);
+    await index.recordsMany(target, ['400']);
+    assert.equal(reads, 2);
+});
+
+test('完整记录读取失败按 ID 缓存，重绘不重复读，刷新索引后才重试', async t => {
+    const { settings } = await fixture(t);
+    const target = { file: 'Data/unknown-name.xlsm', sheet: '奖励', names: [] };
+    const index = new RelationIndex(settings);
+    await index.read(target);
+    const reader = require('../workbookReader') as typeof import('../workbookReader');
+    let reads = 0;
+    const mocked = t.mock.method(reader, 'readSheetRows', async () => { reads++; throw new Error('明细工作簿被占用'); });
+    const requests = await Promise.allSettled([index.recordsMany(target, ['1']), index.recordsMany(target, ['1'])]);
+    assert.ok(requests.every(result => result.status === 'rejected'));
+    await assert.rejects(index.recordsMany(target, ['1']), /被占用/);
+    assert.equal(reads, 1);
+    mocked.mock.restore();
+    assert.equal((await new RelationIndex(settings).recordsMany(target, ['1'])).get('1')?.length, 1);
+});
+
+test('摘要之后键值变化时拒绝旧行号，防止展示错误关联记录', async t => {
+    const { directory, settings } = await fixture(t);
+    const target = { file: 'Data/unknown-name.xlsm', sheet: '奖励', names: [] };
+    const index = new RelationIndex(settings);
+    await index.read(target);
+    await fs.writeFile(path.join(directory, target.file), workbook('奖励', dataRows.replace(cell('A6', '1'), cell('A6', '999'))));
+    await assert.rejects(index.recordsMany(target, ['1']), /记录已变化/);
 });
 test('resolves unknown workbook name recursively and matches exact field names', async t => {
     const { directory, settings } = await fixture(t);
@@ -175,7 +247,7 @@ test('missing entry diagnostic includes the filename and stripped registry name'
     const result = await new TableIndex(settings).lookup('MissingConfigData.json');
     assert.equal(result.state, 'missing');
     assert.match(result.message!, /MissingConfigData\.json/);
-    assert.match(result.message!, /查找名称：missingconfig）/);
+    assert.match(result.message!, /查找名称: missingconfig）/);
 });
 
 test('removes only one trailing Data and preserves Data inside registry names', async t => {

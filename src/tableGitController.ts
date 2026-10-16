@@ -67,7 +67,7 @@ export class TableGitController implements vscode.Disposable {
                 progress => syncTables(uri.fsPath, directory, message => progress.report({ message })));
             void vscode.window.showInformationMessage(`策划表已更新到 ${branch}。`);
         } catch (error) {
-            void vscode.window.showErrorMessage(`策划表更新失败：${error instanceof Error ? error.message : String(error)}。请检查当前策划表分支；已完成的切换不会自动回退。`);
+            void vscode.window.showErrorMessage(`策划表更新失败: ${error instanceof Error ? error.message : String(error)}。请检查当前策划表分支；已完成的切换不会自动回退。`);
         } finally {
             this.busy = false;
             // Pull 失败前也可能已经切换分支，因此失败时同样清空字段缓存。

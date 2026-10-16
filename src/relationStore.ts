@@ -43,6 +43,16 @@ export class RelationStore {
         const rules = (await this.load()).files[this.key(file)];
         return rules ? normalizeRules(rules) : undefined;
     }
+    /** 递归查询使用同一份只读快照，目标路径统一为项目相对路径。 */
+    async snapshot(): Promise<Record<string, RelationRules>> {
+        const result: Record<string, RelationRules> = {};
+        for (const [file, rules] of Object.entries((await this.load()).files)) {
+            const key = path.posix.normalize(file.replace(/\\/g, '/'));
+            if (Object.hasOwn(result, key)) { throw new Error(`匹配表包含重复源文件路径: ${key}`); }
+            result[key] = normalizeRules(rules);
+        }
+        return result;
+    }
     /** 先锁定、重新读盘，再按差异合并，最后原子替换，避免丢失其他文件或窗口的更新。 */
     async write(file: string, rules?: RelationRules, base: RelationRules = emptyRules()) {
         const key = this.key(file);

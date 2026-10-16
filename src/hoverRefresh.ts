@@ -20,13 +20,16 @@ export class HoverRefresh implements vscode.Disposable {
         this.provider = undefined;
     }
 
-    async show(editor: vscode.TextEditor, message: vscode.MarkdownString) {
+    async show(editor: vscode.TextEditor, message: vscode.MarkdownString, expectedLine = editor.selection.active.line) {
+        // 原生命令只能在光标位置重开；不要把别行按钮的内容错误地显示在光标行。
+        if (vscode.window.activeTextEditor !== editor || editor.selection.active.line !== expectedLine) { return; }
         this.clear();
         const generation = this.generation;
         const document = editor.document;
         const position = editor.selection.active;
         const line = document.lineAt(position.line);
-        const current = () => generation === this.generation && vscode.window.activeTextEditor === editor;
+        const current = () => generation === this.generation && vscode.window.activeTextEditor === editor
+            && editor.selection.active.isEqual(position);
         // 行尾已有 decoration.hoverMessage，避免 Provider 再追加一份相同内容。
         if (position.character < line.range.end.character) {
             this.provider = vscode.languages.registerHoverProvider({ language: document.languageId, scheme: document.uri.scheme }, {

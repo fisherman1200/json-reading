@@ -59,7 +59,7 @@ export async function syncTables(jsonFile: string, directory: string, report: (m
     // 显式获取目标引用，远端已删除的分支不能被旧的本地缓存冒充。
     await runGit(root, 'fetch', 'origin', `refs/heads/${target}:${remoteRef}`);
     await runGit(root, 'show-ref', '--verify', remoteRef).catch(() => {
-        throw new Error(`策划表 origin 中没有同名分支：${target}`);
+        throw new Error(`策划表 origin 中没有同名分支: ${target}`);
     });
     const current = await inspectBranches(jsonFile, directory);
     if (current.jsonBranch !== target || current.tableBranch !== initial.tableBranch) {
@@ -67,7 +67,7 @@ export async function syncTables(jsonFile: string, directory: string, report: (m
     }
     await assertClean(root);
     const local = await runGit(root, 'show-ref', '--verify', `refs/heads/${target}`).then(() => true, () => false);
-    report(`正在切换策划表分支：${target}`);
+    report(`正在切换策划表分支: ${target}`);
     if (current.tableBranch !== target) {
         if (local) { await runGit(root, 'switch', '--no-guess', target); }
         else { await runGit(root, 'switch', '--track', '-c', target, remoteRef); }
