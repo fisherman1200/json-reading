@@ -26,9 +26,18 @@ JSON Reading 是一个面向表格型 JSON / JSONC 配置的 VS Code 扩展。�
 
 ## 安装
 
-需要 **VS Code 桌面版 1.140.0 或更高版本**。目前通过 VSIX 安装包安装：
+需要 **VS Code 桌面版 1.140.0 或更高版本**。从 GitHub Release 下载以下文件：
 
-1. 获取 `json-reading-0.0.1.vsix`。
+| 文件下载 | 使用说明 |
+| --- | --- |
+| [json-reading-0.0.1.vsix](https://github.com/fisherman1200/json-reading/releases/download/v0.0.1/json-reading-0.0.1.vsix) | 扩展安装包。按下方步骤安装后，前往[快速使用](#快速使用)打开项目并绑定策划表。 |
+| [relations.json](https://github.com/fisherman1200/json-reading/releases/download/v0.0.1/relations.json) | 预匹配表，提供预先整理的字段关联规则。下载后按[添加预匹配表](#3-添加预匹配表)放入业务项目。 |
+
+以上链接对应 `v0.0.1` Release，发布并上传同名附件后即可下载。其他版本可在 [Releases 页面](https://github.com/fisherman1200/json-reading/releases)查看。
+
+安装扩展：
+
+1. 下载上表中的 `json-reading-0.0.1.vsix`。
 2. 打开 VS Code 左侧的**扩展**视图。
 3. 点击右上角 **… → 从 VSIX 安装…**，选择安装包。
 4. 按提示重新加载窗口。
@@ -64,11 +73,30 @@ code --install-extension json-reading-0.0.1.vsix
 
 侧栏同时显示当前 JSON、双方分支、分支是否一致，以及对应的工作簿和页签。每位成员需要绑定自己的本地目录；仅查看行尾字段名时可以跳过此步骤。
 
-### 3. 悬停查看说明
+### 3. 添加预匹配表
+
+下载安装部分的 [relations.json](https://github.com/fisherman1200/json-reading/releases/download/v0.0.1/relations.json)，放到**当前打开的业务项目根目录**下，保持文件名为 `relations.json`：
+
+```text
+业务项目/
+└─ extensions/
+   └─ json_reading/
+      └─ relations.json
+```
+
+如果目录不存在，先创建 `extensions/json_reading/`。此文件放在业务项目中，不放在 VS Code 扩展安装目录或策划表目录。项目已经有这份文件时，先备份并合并需要的规则，避免覆盖已有的确认、排除和手动添加记录。
+
+保存后扩展会重新读取规则，回到业务数据 JSON，再次悬停字段即可查看已配置的匹配关系和当前值对应的关联结果；没有及时更新时，可以点击策划表侧栏的“刷新索引”。`relations.json` 本身不显示字段提示。
+
+预匹配表中的 JSON 路径、字段及工作簿信息需要与当前业务项目和策划目录对应；其他项目需要使用各自的规则，或通过绿色 **✚** 手动添加。
+
+只使用字段名、描述和备注时，可以跳过此步骤。VSIX 不会自动安装预匹配表；团队也可以将这份文件直接提交到业务仓库，后续成员拉取项目即可获得规则。
+
+### 4. 悬停查看说明
 
 将鼠标移到行尾字段名上，即可查看字段描述、备注和来源。点击蓝色的“工作簿 / 页签”链接可以打开对应策划表。
 
-### 4. 查看或添加关联
+### 5. 查看或添加关联
 
 如果项目已有共享匹配规则，悬浮框会显示匹配目标，并在下方展示当前值查到的关联结果。需要补充关联时，点击绿色 **✚**，选择目标 JSON，再按提示确认对应工作簿和页签。
 
