@@ -10,6 +10,7 @@ import { TableGitController } from './tableGitController';
 import { HoverRefresh } from './hoverRefresh';
 import { RelationController } from './relationController';
 import { isRelationFile } from './relationStore';
+import { JsonReadingSidebar } from './sidebar';
 
 // all：所有可见数据行；selected：光标所在行及多行/多光标选区。
 type DisplayMode = 'all' | 'selected';
@@ -22,6 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
     const tableGit = new TableGitController(descriptions);
     const hoverRefresh = new HoverRefresh();
     const relations = new RelationController(context, descriptions);
+    const sidebar = new JsonReadingSidebar(descriptions, tableGit, relations);
     let hoverAfterLoad: string | undefined;
     const decoration = vscode.window.createTextEditorDecorationType({
         after: {
@@ -142,7 +144,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // VS Code 在扩展停用时统一释放这些装饰、状态栏、命令和事件监听器。
     context.subscriptions.push(
-        decoration, status, descriptions, tableGit, hoverRefresh, relations,
+        sidebar, decoration, status, descriptions, tableGit, hoverRefresh, relations,
         relations.onDidChange(uri => {
             if (vscode.window.activeTextEditor?.document.uri.toString() === uri) {
                 hoverAfterLoad = vscode.window.activeTextEditor.document.uri.fsPath;

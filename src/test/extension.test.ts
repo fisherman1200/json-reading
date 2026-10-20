@@ -148,6 +148,17 @@ suite('JSON field hints', () => {
             await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
         }
     });
+
+    test('原生侧栏可以打开两个视图并注册字段操作命令', async () => {
+        const commands = await vscode.commands.getCommands(true);
+        for (const name of ['refresh', 'sync', 'add', 'accept', 'reject', 'openWorkbook', 'revealField']) {
+            assert.ok(commands.includes('json-reading.sidebar.' + name), `缺少侧栏命令: ${name}`);
+        }
+        // 真实宿主执行视图 focus 会触发可见性回调，验证 view ID 与 provider 的连接。
+        await vscode.commands.executeCommand('json-reading.tableStatus.focus');
+        await vscode.commands.executeCommand('json-reading.relations.focus');
+        await vscode.commands.executeCommand('json-reading.sidebar.refresh');
+    });
 });
 
 
@@ -872,9 +883,9 @@ suite('策划表悬浮提示', () => {
         assert.ok(visibleHtml(hover.value).includes(detail), 'HTML、Markdown 与 codicon 语法应作为备注原文显示');
         assert.ok(!hover.isTrusted, '备注原文不能增加可执行命令权限');
     });
-    test('注册策划目录选择、索引刷新和重名工作簿选择命令', async () => {
+    test('注册策划目录选择、解除绑定、索引刷新和重名工作簿选择命令', async () => {
         const commands = await vscode.commands.getCommands(true);
-        for (const command of ['selectTableDirectory', 'refreshTableIndex', 'selectTableWorkbook', 'openSourceWorkbook', 'syncTables', 'addRelation', 'toggleRelationExpansion']) {
+        for (const command of ['selectTableDirectory', 'clearTableDirectory', 'refreshTableIndex', 'selectTableWorkbook', 'openSourceWorkbook', 'syncTables', 'addRelation', 'toggleRelationExpansion']) {
             assert.ok(commands.includes('json-reading.' + command));
         }
     });

@@ -37,8 +37,17 @@ export class TableDescriptions implements vscode.Disposable {
             vscode.workspace.onDidGrantWorkspaceTrust(() => this.reset()),
             vscode.commands.registerCommand('json-reading.refreshTableIndex', () => this.reset()),
             vscode.commands.registerCommand('json-reading.selectTableDirectory', async () => {
+                if (this.updating) { void vscode.window.showWarningMessage('策划表正在更新，请完成后再更换目录。'); return; }
                 const selected = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, openLabel: '选择策划表目录' });
+                if (this.disposed || this.updating) { return; }
                 if (selected?.[0]) { await this.save('directory', selected[0].fsPath); }
+            }),
+            vscode.commands.registerCommand('json-reading.clearTableDirectory', async () => {
+                if (this.updating) { void vscode.window.showWarningMessage('策划表正在更新，请完成后再解除绑定。'); return; }
+                if (!this.directory) { return; }
+                // 显式保存空字符串，避免删除工作区设置后重新继承用户级的目录。
+                await this.save('directory', '');
+                void vscode.window.showInformationMessage('已解除策划表目录绑定。');
             }),
             vscode.commands.registerCommand('json-reading.selectTableWorkbook', () => this.chooseWorkbook())
         );

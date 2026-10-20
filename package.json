@@ -42,17 +42,194 @@
       },
       {
         "command": "json-reading.selectTableDirectory",
-        "title": "JSON Reading: 选择策划表目录"
+        "title": "JSON Reading: 选择策划表目录",
+        "icon": "$(folder-opened)",
+        "enablement": "!jsonReading.sidebar.busy"
+      },
+      {
+        "command": "json-reading.clearTableDirectory",
+        "title": "JSON Reading: 解除绑定策划表目录",
+        "icon": "$(debug-disconnect)",
+        "enablement": "jsonReading.sidebar.hasDirectory && !jsonReading.sidebar.busy"
       },
       {
         "command": "json-reading.refreshTableIndex",
-        "title": "JSON Reading: 刷新策划表索引"
+        "title": "JSON Reading: 刷新策划表索引",
+        "icon": "$(refresh)"
       },
       {
         "command": "json-reading.selectTableWorkbook",
         "title": "JSON Reading: 选择当前 JSON 的策划工作簿"
+      },
+      {
+        "command": "json-reading.sidebar.refresh",
+        "title": "JSON Reading: 刷新侧栏",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "json-reading.sidebar.sync",
+        "title": "JSON Reading: 按当前 JSON 分支更新策划表",
+        "icon": "$(sync)",
+        "enablement": "jsonReading.sidebar.hasDocument && jsonReading.sidebar.hasDirectory && !jsonReading.sidebar.busy && isWorkspaceTrusted"
+      },
+      {
+        "command": "json-reading.sidebar.add",
+        "title": "JSON Reading: 添加字段关联",
+        "icon": "$(add)",
+        "enablement": "isWorkspaceTrusted && !jsonReading.sidebar.busy && jsonReading.sidebar.hasDirectory"
+      },
+      {
+        "command": "json-reading.sidebar.accept",
+        "title": "JSON Reading: 确认或恢复关联",
+        "icon": "$(check)",
+        "enablement": "isWorkspaceTrusted && !jsonReading.sidebar.busy"
+      },
+      {
+        "command": "json-reading.sidebar.reject",
+        "title": "JSON Reading: 排除关联",
+        "icon": "$(close)",
+        "enablement": "isWorkspaceTrusted && !jsonReading.sidebar.busy"
+      },
+      {
+        "command": "json-reading.sidebar.openWorkbook",
+        "title": "JSON Reading: 打开关联策划表",
+        "icon": "$(go-to-file)",
+        "enablement": "isWorkspaceTrusted && !jsonReading.sidebar.busy"
+      },
+      {
+        "command": "json-reading.sidebar.revealField",
+        "title": "JSON Reading: 定位字段",
+        "icon": "$(go-to-file)",
+        "enablement": "isWorkspaceTrusted && !jsonReading.sidebar.busy"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "json-reading",
+          "title": "JSON Reading",
+          "icon": "media/json-reading.svg"
+        }
+      ]
+    },
+    "views": {
+      "json-reading": [
+        {
+          "id": "json-reading.tableStatus",
+          "name": "策划表"
+        },
+        {
+          "id": "json-reading.relations",
+          "name": "字段关联"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "json-reading.sidebar.refresh",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.sync",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.add",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.accept",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.reject",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.openWorkbook",
+          "when": "false"
+        },
+        {
+          "command": "json-reading.sidebar.revealField",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "json-reading.selectTableDirectory",
+          "when": "view == json-reading.tableStatus",
+          "group": "navigation@1"
+        },
+        {
+          "command": "json-reading.clearTableDirectory",
+          "when": "view == json-reading.tableStatus && jsonReading.sidebar.hasDirectory",
+          "group": "navigation@2"
+        },
+        {
+          "command": "json-reading.refreshTableIndex",
+          "when": "view == json-reading.tableStatus",
+          "group": "navigation@3"
+        },
+        {
+          "command": "json-reading.sidebar.sync",
+          "when": "view == json-reading.tableStatus",
+          "group": "navigation@4"
+        },
+        {
+          "command": "json-reading.sidebar.refresh",
+          "when": "view == json-reading.relations",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "json-reading.sidebar.add",
+          "when": "view == json-reading.relations && viewItem == jsonReadingField",
+          "group": "inline@1"
+        },
+        {
+          "command": "json-reading.sidebar.revealField",
+          "when": "view == json-reading.relations && viewItem == jsonReadingField",
+          "group": "navigation@1"
+        },
+        {
+          "command": "json-reading.sidebar.accept",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetPending",
+          "group": "inline@1"
+        },
+        {
+          "command": "json-reading.sidebar.reject",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetPending",
+          "group": "inline@2"
+        },
+        {
+          "command": "json-reading.sidebar.reject",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetAccepted",
+          "group": "inline@2"
+        },
+        {
+          "command": "json-reading.sidebar.accept",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetRejected",
+          "group": "inline@1"
+        },
+        {
+          "command": "json-reading.sidebar.openWorkbook",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetPending",
+          "group": "navigation@1"
+        },
+        {
+          "command": "json-reading.sidebar.openWorkbook",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetAccepted",
+          "group": "navigation@1"
+        },
+        {
+          "command": "json-reading.sidebar.openWorkbook",
+          "when": "view == json-reading.relations && viewItem == jsonReadingTargetRejected",
+          "group": "navigation@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "JSON Reading",
       "properties": {
