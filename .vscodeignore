@@ -1,6 +1,10 @@
 .vscode/**
 .vscode-test/**
 src/**
+out/test/**
+dist/**
+*.vsix
+examples/**
 scripts/*.cjs
 .gitignore
 .yarnrc

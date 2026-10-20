@@ -1,6 +1,12 @@
 {
   "name": "json-reading",
+  "publisher": "fff",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fisherman1200/json-reading.git"
+  },
   "displayName": "json_reading",
+  "icon": "media/json-reading.png",
   "description": "为表格型 JSON 数据显示首行定义的字段名",
   "version": "0.0.1",
   "engines": {
@@ -303,6 +309,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
+    "prepackage": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\"",
+    "package": "vsce package --out dist/ --skip-license",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
@@ -317,6 +325,7 @@
     "@types/yauzl": "^3.4.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "4.0.0",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.1"
