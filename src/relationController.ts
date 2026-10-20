@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { parse, type ParseError } from 'jsonc-parser';
 import type { TableDescriptions } from './tableDescriptions';
-import { addCandidates, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules, valuesForRule, relationCellsInRange,
+import { addCandidates, addManualRelation, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, ruleKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules, valuesForRule, relationCellsInRange,
     type RelationCell, type RelationDocument, type RelationRules, type TargetData, type RelationTarget, type RelationRow } from './relations';
 import { configName } from './tableIndex';
 import { RelationStore, isRelationFile, normalizeRules } from './relationStore';
@@ -14,7 +15,7 @@ import { RelationExpansionState, cascadeRootKey, cascadeBranchKeys } from './rel
 export const relationCommands = {
     decide: 'json-reading.decideRelation', rescan: 'json-reading.rescanRelations',
     clear: 'json-reading.clearRelations', details: 'json-reading.relationDetails',
-    toggle: 'json-reading.toggleRelationExpansion'
+    toggle: 'json-reading.toggleRelationExpansion', add: 'json-reading.addRelation'
 };
 export interface RelationState {
     parsed: RelationDocument; rules: RelationRules; data: TargetData[];
@@ -86,6 +87,7 @@ export class RelationController implements vscode.Disposable {
                 this.bump(doc.uri.toString()); this.states.delete(doc.uri.toString()); this.parsedDocuments.delete(doc.uri.toString());
             }),
             vscode.commands.registerCommand(relationCommands.decide, guarded((...args) => this.decide(...args), (...args) => args[3] === 'accepted' ? '正在确认关联…' : '正在排除关联…')),
+            vscode.commands.registerCommand(relationCommands.add, guarded((value, field) => this.add(value, field), '正在添加字段关联…')),
             vscode.commands.registerCommand(relationCommands.rescan, guarded((value, field) => this.rescan(value, field), '正在全搜索当前字段关联…')),
             vscode.commands.registerCommand(relationCommands.clear, guarded(value => this.clear(value), '正在清空当前 JSON 的匹配表…')),
             vscode.commands.registerCommand(relationCommands.details, guarded((...args) => this.details(...args))),
@@ -431,14 +433,14 @@ export class RelationController implements vscode.Disposable {
         }
     }
 
-    private async scanField(document: vscode.TextDocument, parsed: RelationDocument, requested: unknown): Promise<string> {
+    private async scanField(document: vscode.TextDocument, parsed: RelationDocument, requested: unknown, action = '全搜索'): Promise<string> {
         if (requested !== undefined) {
             if (typeof requested !== 'string') { throw new Error('字段参数无效，请重新打开悬浮提示。'); }
             selectRelationField(parsed, requested);
             return requested;
         }
         const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document !== document) { throw new Error('请在对应 JSON 的数据字段上放置光标后再全搜索。'); }
+        if (!editor || editor.document !== document) { throw new Error(`请在对应 JSON 的数据字段上放置光标后再${action}。`); }
         const position = editor.selection.active, offset = document.offsetAt(position);
         if (parsed.primaryRanges.some(range => range.start <= offset && offset < range.end)) { throw new Error('首列 ID 不参与关联搜索，请选择其他数据字段。'); }
         let cells = parsed.cells.filter(cell => cell.start <= offset && offset < cell.end);
@@ -449,9 +451,114 @@ export class RelationController implements vscode.Disposable {
         const choices = [...new Map(cells.map(cell => [fieldKey(cell.column, cell.field), { label: cell.field, description: `第 ${cell.column + 1} 列`, key: fieldKey(cell.column, cell.field) }])).values()];
         if (!choices.length) { throw new Error('当前光标不在可搜索的数据字段上，首列 ID 不参与关联搜索。'); }
         if (choices.length === 1) { return choices[0].key; }
-        const selected = await vscode.window.showQuickPick(choices, { title: '选择要全搜索的字段', placeHolder: '仅搜索选中字段在此 JSON 中的所有记录' });
-        if (!selected) { throw new RelationActionCancelled('已取消字段全搜索。'); }
+        const selected = await vscode.window.showQuickPick(choices, { title: `选择要${action}的字段`,
+            placeHolder: action === '全搜索' ? '仅搜索选中字段在此 JSON 中的所有记录' : '为选中字段在此 JSON 中的所有记录添加关联' });
+        if (!selected) { throw new RelationActionCancelled(`已取消字段${action}。`); }
         return selected.key;
+    }
+
+    /** 默认搜索当前配置目录；浏览入口只用于选择表，不把目标 JSON 路径写入规则。 */
+    private async chooseTargetJson(document: vscode.TextDocument, field: string, valid: () => boolean): Promise<string | undefined> {
+        const directory = path.dirname(document.uri.fsPath);
+        const entries = await fs.readdir(directory, { withFileTypes: true });
+        this.ensureCurrent(valid);
+        const choices: (vscode.QuickPickItem & { file?: string; browse?: boolean })[] = entries
+            .filter(entry => entry.isFile() && /\.jsonc?$/i.test(entry.name) && !isRelationFile(path.join(directory, entry.name)))
+            .sort((left, right) => left.name.localeCompare(right.name))
+            .map(entry => ({ label: entry.name, description: directory, file: path.join(directory, entry.name) }));
+        choices.push({ label: '浏览其他 JSON 文件…', browse: true });
+        const selected = await vscode.window.showQuickPick(choices, {
+            title: `为字段「${JSON.parse(field)[1]}」选择目标 JSON`,
+            placeHolder: '输入文件名搜索当前目录，或浏览其他 JSON 文件', matchOnDescription: true, ignoreFocusOut: true
+        });
+        this.ensureCurrent(valid);
+        if (!selected) { return; }
+        if (!selected.browse) { return selected.file; }
+        const files = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
+            defaultUri: vscode.Uri.file(directory), filters: { '配置 JSON': ['json', 'jsonc'] }, openLabel: '选择关联目标 JSON' });
+        this.ensureCurrent(valid);
+        if (!files?.[0]) { return; }
+        if (files[0].scheme !== 'file') { throw new Error('请选择本地配置 JSON 文件。'); }
+        return files[0].fsPath;
+    }
+
+    /** 文件选择只接受现有表格格式；普通 JSON 和共享匹配表不能充当配置表。 */
+    private async validateTargetJson(file: string): Promise<string[]> {
+        if (!/\.jsonc?$/i.test(file) || isRelationFile(file)) { throw new Error('请选择数据 JSON 文件，匹配表自身不能作为关联目标。'); }
+        const identity = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+        if (vscode.workspace.textDocuments.some(document => identity(document.uri.fsPath) === identity(file) && document.isDirty)) {
+            throw new Error('目标 JSON 有未保存修改，请先保存后再添加关联。');
+        }
+        const errors: ParseError[] = [], jsonc = /\.jsonc$/i.test(file);
+        const value: unknown = parse((await fs.readFile(file, 'utf8')).replace(/^\uFEFF/, ''), errors,
+            { allowTrailingComma: jsonc, disallowComments: !jsonc });
+        if (errors.length || !Array.isArray(value) || !Array.isArray(value[0]) || !value[0].length ||
+            value[0].some(field => typeof field !== 'string') || value.slice(1).some(row => !Array.isArray(row))) {
+            throw new Error(`${path.basename(file)} 不是首行字段名的表格 JSON。`);
+        }
+        return value[0] as string[];
+    }
+
+    /** 手动选择只新增该字段的目标；已有条件/提取规则必须明确选择，不能被无条件关联绕过。 */
+    private async add(value: unknown, requested: unknown) {
+        const document = this.document(value), state = this.readyState(document), uri = document.uri.toString(), version = document.version;
+        if (!this.tables.directory) { throw new Error('请先选择策划表目录，再添加关联。'); }
+        const index = this.index ??= new RelationIndex(this.tables.tableSettings);
+        let epoch = this.epochs.get(uri);
+        const valid = () => !this.disposed && !document.isClosed && document.version === version && !this.tables.isUpdating
+            && this.states.get(uri)?.state === state && this.epochs.get(uri) === epoch && this.index === index;
+        const field = await this.scanField(document, state.parsed, requested, '添加关联');
+        this.ensureCurrent(valid);
+        const file = await this.chooseTargetJson(document, field, valid);
+        if (!file) { return; }
+        const header = await this.validateTargetJson(file);
+        this.ensureCurrent(valid);
+        const targets = await index.resolveTargets(file);
+        this.ensureCurrent(valid);
+        if (!targets.length) { throw new Error('没有找到目标 JSON 对应的策划工作簿。'); }
+        const selected = targets.length === 1 ? { target: targets[0] } : await vscode.window.showQuickPick(targets.map(target => ({
+            label: target.file, description: target.sheet, target
+        })), { title: `选择 ${path.basename(file)} 对应的工作簿和页签`, ignoreFocusOut: true });
+        this.ensureCurrent(valid);
+        if (!selected) { return; }
+        const target = selected.target;
+        const baseKey = targetKey({ ...target, keyField: undefined });
+        const sameTable = Object.entries(state.rules.fields[field]?.targets ?? {}).filter(([, rule]) =>
+            targetKey({ ...rule.target, keyField: undefined }) === baseKey);
+        let existingRule: string | undefined;
+        if (sameTable.some(([, rule]) => rule.when || rule.extract || (rule.target.keyField && rule.target.keyField.toLowerCase() !== 'id'))) {
+            const selectedRule = await vscode.window.showQuickPick(sameTable.map(([key, rule]) => ({
+                label: `当前状态: ${rule.decision === 'accepted' ? '已确认' : rule.decision === 'rejected' ? '已排除' : '新增等待'}`,
+                description: rule.when ? `${rule.when.field} = ${rule.when.values.join(' / ')}` : undefined, key
+            })), { title: '选择要启用的关联', placeHolder: '选择后启用该关联', ignoreFocusOut: true });
+            this.ensureCurrent(valid);
+            if (!selectedRule) { return; }
+            existingRule = selectedRule.key;
+        }
+        const next = addManualRelation(state.rules, field, target, existingRule);
+        const candidate = next.fields[field].targets[existingRule ?? ruleKey(target)];
+        const keyField = candidate.target.keyField ?? 'ID';
+        if (header.filter(name => name.toLowerCase() === keyField.toLowerCase()).length !== 1) {
+            throw new Error(`目标 JSON ${path.basename(file)} 必须包含唯一的 ${keyField} 字段。`);
+        }
+        if (state.rules.fields[field]?.targets[existingRule ?? ruleKey(target)]?.decision === 'accepted') {
+            return `字段「${JSON.parse(field)[1]}」已存在该关联，无需重复添加。`;
+        }
+        const metadata = await index.metadata(candidate.target);
+        this.ensureCurrent(valid);
+        if ([...metadata.keys()].filter(name => name.toLowerCase() === keyField.toLowerCase()).length !== 1) {
+            throw new Error(`目标页签 ${candidate.target.sheet} 必须包含唯一的 ${keyField} 字段。`);
+        }
+        // 当前值尚未命中也可建立字段关系；读取成功后再保存，避免把不可读的表写入匹配表。
+        await index.read(candidate.target);
+        this.ensureCurrent(valid);
+        epoch = this.bump(uri);
+        await this.saveAction(uri, epoch, next, valid);
+        this.ensureCurrent(valid);
+        this.states.delete(uri);
+        this.get(document);
+        this.changed.fire(uri);
+        return `已为字段「${JSON.parse(field)[1]}」添加关联: ${path.basename(target.file)} / ${target.sheet}。`;
     }
 
     private async decide(...args: unknown[]) {

@@ -4,9 +4,16 @@ import type { TableView } from './tableDescriptions';
 import { syncTablesCommand, type GitView } from './tableGitController';
 import type { RelationView } from './relationController';
 import { appendFieldRelations, appendRecordResults, appendTranslationResults, trustHoverCommands } from './relationHover';
-import { noteHtml } from './hoverNote';
 
 export const openWorkbookCommand = 'json-reading.openSourceWorkbook';
+
+/** 常态备注直接显示全文；转义 HTML、Markdown 和图标语法，原始换行按行保留。 */
+function detailRows(detail: string): string {
+    return detail.split(/\r\n|\r|\n/).map((line, index) => {
+        const text = line.replace(/[&<>"'`*_[\]\\|~$]/g, character => `&#${character.codePointAt(0)};`);
+        return `<tr><td>${index === 0 ? '备注:&nbsp;' : ''}</td><td>${text || '<br>'}</td></tr>`;
+    }).join('');
+}
 
 /** 表格内容一律作为纯文本追加，避免策划说明中的 Markdown 或链接被执行/渲染。 */
 export function createFieldHover(fields: string[], table?: TableView, git?: GitView, relations?: RelationView): vscode.MarkdownString {
@@ -18,10 +25,10 @@ export function createFieldHover(fields: string[], table?: TableView, git?: GitV
         const details = table?.state === 'ready' ? table.fields?.get(field) : undefined;
         if (details?.description) { hover.appendText(`    描述: ${details.description}`); }
         appendFieldRelations(hover, field, relations, openWorkbookCommand);
-        const note = details ? noteHtml(details.detail) : '';
-        if (note) {
+        if (details?.detail.trim()) {
             hover.supportHtml = true;
-            hover.appendMarkdown(`\n\n${note}\n\n`);
+            // 两列让备注各行正文保持对齐；级联结果仍使用其自己的悬停备注标记。
+            hover.appendMarkdown(`\n\n<table><tbody>${detailRows(details.detail)}</tbody></table>\n\n`);
         }
     }
     if (table?.state === 'ready') {

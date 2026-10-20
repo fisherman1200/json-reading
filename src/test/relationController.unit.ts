@@ -34,6 +34,8 @@ const table = (sheet: string, ids: string[]): TargetData => ({
     target: { file: 'test.xlsm', sheet, names: [sheet] },
     rows: new Map(ids.map(id => [id, [{ id, row: 6, values: [['Name', sheet]] }]]))
 });
+type TestPickItem = { label: string; description?: string; [key: string]: unknown };
+type TestPickChoice = (items: readonly TestPickItem[]) => TestPickItem | undefined | Promise<TestPickItem | undefined>;
 
 /** 仅替换编辑器、磁盘和 XLSM 边界，命令调度、选列、规则计算和保存流程执行真实代码。 */
 function harness() {
@@ -42,6 +44,8 @@ function harness() {
     const disk = new Map<string, RelationRules>();
     const writes: { file: string; rules?: RelationRules }[] = [];
     const documents: vscode.TextDocument[] = [];
+    const files = new Map<string, string>();
+    const directories = new Set<string>();
     const information: string[] = [], errors: string[] = [], warnings: string[] = [], events: string[] = [];
     const progress: { location: number; title: string }[] = [];
     const invalidated = new TestEvent<void>(), closed = new TestEvent<vscode.TextDocument>();
@@ -74,6 +78,26 @@ function harness() {
         personalGate: undefined as Promise<void> | undefined,
         personalStarted: undefined as ReturnType<typeof deferred<void>> | undefined,
         personalError: undefined as Error | undefined,
+        pickChoices: [] as TestPickChoice[],
+        pickCalls: [] as { items: readonly TestPickItem[]; options: unknown }[],
+        dialogPaths: undefined as string[] | undefined,
+        dialogCalls: [] as unknown[],
+        openedDocuments: [] as unknown[],
+        directoryReads: [] as string[],
+        fileReads: [] as string[],
+        fileReadError: undefined as Error | undefined,
+        fileReadGate: undefined as Promise<void> | undefined,
+        fileReadStarted: undefined as ReturnType<typeof deferred<void>> | undefined,
+        targets: new Map<string, RelationTarget[]>(),
+        targetCalls: [] as string[],
+        targetGate: undefined as Promise<void> | undefined,
+        targetStarted: undefined as ReturnType<typeof deferred<void>> | undefined,
+        targetError: undefined as Error | undefined,
+        metadata: new Map<string, Map<string, { description: string; detail: string }>>(),
+        metadataCalls: [] as RelationTarget[],
+        metadataError: undefined as Error | undefined,
+        indexReads: [] as RelationTarget[],
+        indexReadError: undefined as Error | undefined,
         scans: 0
     };
     const tableDescriptions = {
@@ -92,7 +116,18 @@ function harness() {
         showInformationMessage: (message: string) => { information.push(message); events.push('information'); },
         showErrorMessage: (message: string) => { errors.push(message); events.push('error'); },
         showWarningMessage: (message: string) => { warnings.push(message); events.push('warning'); },
-        showQuickPick: async () => undefined
+        showQuickPick: async (items: readonly TestPickItem[], options: unknown) => {
+            controls.pickCalls.push({ items, options });
+            return controls.pickChoices.shift()?.(items);
+        },
+        showOpenDialog: async (options: unknown) => {
+            controls.dialogCalls.push(options);
+            return controls.dialogPaths?.map(uri);
+        },
+        showTextDocument: async (value: unknown) => {
+            controls.openedDocuments.push(value);
+            throw new Error('测试不应打开目标编辑器');
+        }
     };
     class MemoryStore {
         readonly root = root;
@@ -115,6 +150,17 @@ function harness() {
         }
     }
     class MemoryIndex {
+        async resolveTargets(file: string) {
+            controls.targetCalls.push(file); controls.targetStarted?.resolve();
+            await controls.targetGate;
+            if (controls.targetError) { throw controls.targetError; }
+            return controls.targets.get(file) ?? [];
+        }
+        async metadata(target: RelationTarget) {
+            controls.metadataCalls.push(target);
+            if (controls.metadataError) { throw controls.metadataError; }
+            return controls.metadata.get(relations.targetKey(target)) ?? new Map([['ID', { description: '编号', detail: '' }]]);
+        }
         async scan() {
             controls.scans++;
             controls.scanStarted?.resolve();
@@ -122,6 +168,8 @@ function harness() {
             return controls.scanGate ? await controls.scanGate : controls.tables;
         }
         async read(target: RelationTarget) {
+            controls.indexReads.push(target);
+            if (controls.indexReadError) { throw controls.indexReadError; }
             const found = controls.tables.find(item => relations.targetKey(item.target) === relations.targetKey(target));
             if (!found) { throw new Error('测试关联表不存在'); }
             return found;
@@ -154,9 +202,14 @@ function harness() {
         Position: class { constructor(readonly line: number, readonly character: number) {} },
         ProgressLocation: { Window: 10 },
         RelativePattern: class { constructor(readonly base: string, readonly pattern: string) {} },
+        Uri: { file: uri },
         window,
         workspace: {
             isTrusted: true, textDocuments: documents,
+            openTextDocument: async (value: unknown) => {
+                controls.openedDocuments.push(value);
+                throw new Error('测试不应打开目标编辑器');
+            },
             getWorkspaceFolder: () => ({ uri: { fsPath: root } }),
             onDidChangeConfiguration: noopEvent, onDidChangeTextDocument: noopEvent, onDidCloseTextDocument: closed.event,
             createFileSystemWatcher: (pattern: string | { base: string; pattern: string }) => {
@@ -177,7 +230,22 @@ function harness() {
         ['./relations', { ...relations, RelationIndex: MemoryIndex, readTranslations: async () => new Map([['i18n_1', '中文说明'], ['i18n_2', '第二条说明']]) }],
         ['./relationStore', { ...relationStore, RelationStore: MemoryStore }],
         ['./relationCascade', { RelationCascade: MemoryCascade }],
-        ['node:fs/promises', { readFile: async () => JSON.stringify([...disk]) }],
+        ['node:fs/promises', {
+            readFile: async (file: string) => {
+                if (file === path.join(root, relationStore.relationFile)) { return JSON.stringify([...disk]); }
+                controls.fileReads.push(file); controls.fileReadStarted?.resolve();
+                await controls.fileReadGate;
+                if (controls.fileReadError) { throw controls.fileReadError; }
+                if (!files.has(file)) { throw Object.assign(new Error('虚拟文件不存在'), { code: 'ENOENT' }); }
+                return files.get(file)!;
+            },
+            readdir: async (directory: string, options?: { withFileTypes?: boolean }) => {
+                controls.directoryReads.push(directory);
+                const entries = [...files.keys(), ...directories].filter(file => path.dirname(file) === directory);
+                return options?.withFileTypes ? entries.map(file => ({ name: path.basename(file),
+                    isFile: () => files.has(file), isDirectory: () => directories.has(file) })) : entries.map(file => path.basename(file));
+            }
+        }],
         ['./relationDocument', { resolveRelationDocument: (uri: unknown) => {
             const found = uri === undefined ? window.activeTextEditor?.document : documents.find(doc => doc.uri.toString() === uri);
             if (!found) { throw new Error('按钮对应的文件未打开'); }
@@ -207,18 +275,26 @@ function harness() {
         context as unknown as vscode.ExtensionContext, tableDescriptions as unknown as TableDescriptions);
     controller.onDidChange(uri => changes.push(uri));
     controller.onDidToggleExpansion(event => toggles.push(event));
+    function uri(file: string) {
+        return { fsPath: file, path: file.replace(/\\/g, '/'), scheme: 'file', toString: () => `file://${file.replace(/\\/g, '/')}` };
+    }
+    function file(name: string, text: string) {
+        const file = path.resolve(root, name);
+        files.set(file, text);
+        return file;
+    }
     function document(name: string, text: string, initial?: RelationRules) {
-        const file = path.join(root, name);
-        const uri = { fsPath: file, scheme: 'file', toString: () => `file://${file.replace(/\\/g, '/')}` };
+        const filename = file(name, text);
+        const documentUri = uri(filename);
         const lines = text.split('\n');
         const mutable = {
-            uri, languageId: 'json', version: 1, lineCount: lines.length, isClosed: false, isDirty: false, getText: () => text,
+            uri: documentUri, languageId: path.extname(filename).toLowerCase() === '.jsonc' ? 'jsonc' : 'json', version: 1, lineCount: lines.length, isClosed: false, isDirty: false, getText: () => text,
             offsetAt: (position: vscode.Position) => lines.slice(0, position.line).reduce((sum, line) => sum + line.length + 1, 0) + position.character,
             lineAt: (line: number) => ({ range: { start: { line, character: 0 }, end: { line, character: lines[line].length } } })
         };
         const doc = mutable as unknown as vscode.TextDocument;
         documents.push(doc);
-        if (initial) { disk.set(file, structuredClone(initial)); }
+        if (initial) { disk.set(filename, structuredClone(initial)); }
         return { doc, mutable };
     }
     function select(document: vscode.TextDocument, line: number) {
@@ -246,7 +322,7 @@ function harness() {
         return command(...args);
     };
     return { controller, controls, tableDescriptions, disk, writes, information, errors, warnings, events, progress,
-        changes, personalUpdates, toggles, invalidated, closed, watchers, window, document, select, ready, invoke };
+        changes, personalUpdates, toggles, invalidated, closed, watchers, window, files, directories, file, document, select, ready, invoke };
 }
 
 test('字段全搜索只保存该列所有行，进度覆盖扫描与保存，成功通知在完成之后', async t => {
@@ -389,6 +465,340 @@ function lineOf(document: vscode.TextDocument, text: string) {
     assert.notEqual(line, -1, `找不到测试数据行：${text}`);
     return line;
 }
+
+function manualFixture(h: ReturnType<typeof harness>, previous?: RelationRules) {
+    const target = table('Items', ['100']);
+    h.controls.tables = [target];
+    const source = h.document('SourceData.json', '[\n ["ID", "Ref", "Other"],\n [\n  1,\n  100,\n  200\n ]\n]', previous);
+    const file = h.file('TargetData.json', '[["ID","Name"],[100,"物品"]]');
+    h.controls.targets.set(file, [target.target]);
+    return { ...source, field: relations.fieldKey(1, 'Ref'), target, file };
+}
+
+function chooseFile(h: ReturnType<typeof harness>, file: string) {
+    h.controls.pickChoices.push(items => {
+        const found = items.find(item => item.file === file);
+        assert.ok(found, `未提供目标文件：${file}`);
+        return found;
+    });
+}
+
+test('手动添加只保存当前字段，保存完成才通知并重新加载，目标无需与当前值碰撞', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const other = table('Other', ['200']);
+    const previous = rulesFor(2, 'Other', { target: other.target, decision: 'rejected' });
+    const { doc, field, target, file } = manualFixture(h, previous);
+    // 字段关联由用户指定；没有当前 ID 命中也不能退回全搜索。
+    target.rows.clear();
+    h.controls.tables.push(other);
+    const second = h.document('SecondData.json', '[["ID","Other"],[2,200]]', previous).doc;
+    h.file('readme.txt', '忽略非 JSON');
+    h.directories.add(path.join(path.dirname(file), 'Folder.json'));
+    await h.ready(doc);
+    chooseFile(h, file);
+    const saved = deferred<void>();
+    h.controls.writeGate = saved.promise; h.controls.writeStarted = deferred<void>();
+    const action = h.invoke('add', doc.uri.toString(), field);
+    await h.controls.writeStarted.promise;
+    assert.deepEqual(h.information, []);
+    assert.equal(h.writes.length, 0);
+    assert.equal(h.progress[0].location, 10);
+    saved.resolve(); await action;
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.writes[0].file, doc.uri.fsPath);
+    const next = h.disk.get(doc.uri.fsPath)!;
+    assert.deepEqual(next.fields[relations.fieldKey(2, 'Other')], previous.fields[relations.fieldKey(2, 'Other')]);
+    assert.deepEqual(next.fields[field].targets, { [relations.targetKey(target.target)]: { target: target.target, decision: 'accepted' } });
+    assert.deepEqual(h.disk.get(second.uri.fsPath), previous);
+    assert.equal(JSON.stringify(next).includes(file), false, '共享规则只记录工作簿和页签，不增加目标 JSON 路径');
+    assert.deepEqual((await h.ready(doc)).rules, next);
+    assert.equal(h.controller.get(doc)?.data.length, 1);
+    assert.deepEqual(h.controls.targetCalls, [file]);
+    assert.equal(h.controls.pickCalls.length, 1);
+    assert.equal(h.controls.pickCalls[0].items.some(item => item.label === 'readme.txt' || item.label === 'Folder.json'), false);
+    assert.equal(h.controls.scans, 0);
+    assert.deepEqual(h.controls.openedDocuments, []);
+    assert.deepEqual(h.errors, []);
+    assert.equal(h.information.length, 1);
+    assert.match(h.information[0], /Ref.*添加关联.*Items/);
+    assert.deepEqual(h.events, ['progress:start', 'write:complete', 'progress:end', 'information']);
+});
+
+test('命令面板按当前数据字段添加，可浏览其他目录 JSONC，期间不切换编辑器', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const { doc, field, target } = manualFixture(h);
+    const external = h.file(path.resolve('virtual-other-configs', 'ExternalData.jsonc'), '\uFEFF[\n // 配置说明\n ["id","Name"],\n [100,"物品"],\n]');
+    h.controls.targets.set(external, [target.target]);
+    h.controls.dialogPaths = [external];
+    h.controls.pickChoices.push(items => items.find(item => item.browse === true));
+    h.select(doc, lineOf(doc, '100,'));
+    const editor = h.window.activeTextEditor;
+    await h.ready(doc);
+    await h.invoke('add');
+    assert.equal(h.writes.length, 1);
+    assert.deepEqual(Object.keys(h.disk.get(doc.uri.fsPath)!.fields), [field]);
+    assert.deepEqual(h.controls.fileReads, [external]);
+    assert.deepEqual(h.controls.targetCalls, [external]);
+    assert.equal(h.controls.dialogCalls.length, 1);
+    const options = h.controls.dialogCalls[0] as { defaultUri: vscode.Uri; canSelectMany: boolean; filters: Record<string, string[]> };
+    assert.equal(options.defaultUri.fsPath, path.dirname(doc.uri.fsPath));
+    assert.equal(options.canSelectMany, false);
+    assert.deepEqual(Object.values(options.filters), [['json', 'jsonc']]);
+    assert.equal(h.window.activeTextEditor, editor);
+    assert.deepEqual(h.controls.openedDocuments, []);
+    assert.deepEqual(h.errors, []);
+    await h.ready(doc);
+});
+
+test('一个目标 JSON 对应多个页签时只保存用户选中的工作簿和页签', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const { doc, field, target, file } = manualFixture(h);
+    const selected = table('ItemsV2', ['100']); selected.target.file = 'other.xlsm';
+    h.controls.tables.push(selected);
+    h.controls.targets.set(file, [target.target, selected.target]);
+    chooseFile(h, file);
+    h.controls.pickChoices.push(items => items.find(item => item.target === selected.target));
+    await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+    assert.deepEqual(h.disk.get(doc.uri.fsPath)!.fields[field].targets,
+        { [relations.targetKey(selected.target)]: { target: selected.target, decision: 'accepted' } });
+    assert.equal(h.controls.pickCalls.length, 2);
+    assert.deepEqual(h.controls.metadataCalls, [selected.target]);
+    assert.equal(h.controls.indexReads.every(item => item.sheet === selected.target.sheet), true);
+    await h.ready(doc);
+});
+
+test('启用已有特殊关联保留条件、提取和非 ID 目标键，不新增无条件替代规则', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const target = table('Items', ['100']); target.target.keyField = 'quality';
+    const when = { field: 'Other', values: [200] }, extract = { separator: ':', index: 0, listSeparator: ',' };
+    const rule: TargetRule = { target: target.target, decision: 'rejected', when, extract };
+    const sibling: TargetRule = { target: target.target, decision: 'rejected', when: { field: 'Other', values: [201] } };
+    const previous = rulesFor(1, 'Ref', rule, sibling);
+    const { doc, field, file } = manualFixture(h, previous);
+    h.files.set(file, '[["Quality","Name"],[100,"品质配置"]]');
+    h.controls.tables = [target];
+    h.controls.metadata.set(relations.targetKey(target.target), new Map([['Quality', { description: '品质', detail: '' }]]));
+    const chosen = relations.ruleKey(rule.target, rule.when, rule.extract);
+    chooseFile(h, file);
+    h.controls.pickChoices.push(items => items.find(item => item.key === chosen));
+    await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+    const next = h.disk.get(doc.uri.fsPath)!;
+    const expected = structuredClone(previous); expected.fields[field].targets[chosen].decision = 'accepted';
+    assert.deepEqual(next, expected);
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.controls.pickCalls.length, 2);
+    assert.deepEqual(h.controls.pickCalls[1], {
+        items: [
+            { label: '当前状态: 已排除', description: 'Other = 200', key: chosen },
+            { label: '当前状态: 已排除', description: 'Other = 201', key: relations.ruleKey(sibling.target, sibling.when) }
+        ],
+        options: { title: '选择要启用的关联', placeHolder: '选择后启用该关联', ignoreFocusOut: true }
+    });
+    assert.deepEqual(h.controls.metadataCalls, [target.target]);
+    assert.equal(Object.keys(next.fields[field].targets).length, 2);
+    assert.deepEqual(h.errors, []);
+    await h.ready(doc);
+});
+
+test('默认 ID 与条件规则共存时必须明确选择，恢复默认关联不改变条件规则', async t => {
+    for (const decision of ['accepted', 'pending', 'rejected'] as const) {
+        await t.test(decision, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const target = table('Items', ['100']);
+            const previous = rulesFor(1, 'Ref', { target: target.target, decision },
+                { target: target.target, decision: 'rejected', when: { field: 'Other', values: [200] } });
+            const { doc, field, file } = manualFixture(h, previous);
+            chooseFile(h, file);
+            h.controls.pickChoices.push(items => items.find(item => item.key === relations.ruleKey(target.target)));
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.equal(h.controls.pickCalls.length, 2, '混合规则不能静默恢复无条件关联');
+            assert.deepEqual(h.controls.pickCalls[1].items[0], {
+                label: `当前状态: ${decision === 'accepted' ? '已确认' : decision === 'pending' ? '新增等待' : '已排除'}`,
+                description: undefined, key: relations.ruleKey(target.target)
+            });
+            assert.equal(h.writes.length, decision === 'accepted' ? 0 : 1);
+            const expected = structuredClone(previous);
+            expected.fields[field].targets[relations.ruleKey(target.target)].decision = 'accepted';
+            assert.deepEqual(h.disk.get(doc.uri.fsPath), expected);
+            assert.equal(h.information.length, 1);
+            if (decision === 'accepted') {
+                assert.match(h.information[0], /无需重复添加/);
+                assert.deepEqual(h.controls.metadataCalls, []);
+            }
+            assert.deepEqual(h.errors, []);
+            await h.ready(doc);
+        });
+    }
+});
+
+test('取消文件、浏览窗口、目标页签或特殊规则选择均不保存也不发成功通知', async t => {
+    for (const stage of ['file', 'browse', 'target', 'rule'] as const) {
+        await t.test(stage, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const previous = stage === 'rule' ? rulesFor(1, 'Ref', {
+                target: table('Items', []).target, decision: 'rejected', when: { field: 'Other', values: [200] }
+            }) : undefined;
+            const { doc, field, file, target } = manualFixture(h, previous);
+            if (stage === 'browse') { h.controls.pickChoices.push(items => items.find(item => item.browse === true)); }
+            else if (stage !== 'file') { chooseFile(h, file); }
+            if (stage === 'target') { h.controls.targets.set(file, [target.target, table('Alternative', []).target]); }
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.deepEqual(h.disk.get(doc.uri.fsPath), previous);
+            assert.equal(h.writes.length, 0);
+            assert.deepEqual(h.information, []);
+            assert.deepEqual(h.errors, []);
+            assert.deepEqual(h.warnings, []);
+            assert.equal(h.controls.scans, 0);
+        });
+    }
+});
+
+test('手动目标必须是表格 JSON，非法格式在定位工作簿前拒绝', async t => {
+    const invalid = {
+        object: '{"ID":100}',
+        header: '[["ID",10],[100,"物品"]]',
+        row: '[["ID","Name"],{"ID":100}]',
+        syntax: '[["ID"],[100]',
+        commentInJson: '[/*注释*/["ID"],[100]]'
+    };
+    for (const [name, text] of Object.entries(invalid)) {
+        await t.test(name, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc, field, file } = manualFixture(h);
+            h.files.set(file, text); chooseFile(h, file);
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.equal(h.writes.length, 0);
+            assert.deepEqual(h.information, []);
+            assert.equal(h.errors.length, 1);
+            assert.deepEqual(h.controls.targetCalls, []);
+        });
+    }
+});
+
+test('默认关联要求目标 JSON 包含唯一 ID 列，允许工作表中同 ID 的多条记录', async t => {
+    for (const kind of ['missing', 'duplicateColumn', 'duplicateRows'] as const) {
+        await t.test(kind, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc, field, file } = manualFixture(h);
+            h.files.set(file, kind === 'missing' ? '[["Key","Name"],[100,"物品"]]'
+                : kind === 'duplicateColumn' ? '[["ID","id"],[100,100]]'
+                : '[["ID","Name"],[100,"第一条"],[100,"第二条"]]');
+            chooseFile(h, file);
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.deepEqual(h.controls.targetCalls, [file]);
+            if (kind === 'duplicateRows') {
+                assert.equal(h.writes.length, 1);
+                assert.deepEqual(h.errors, []);
+                await h.ready(doc);
+            } else {
+                assert.equal(h.writes.length, 0);
+                assert.deepEqual(h.information, []);
+                assert.equal(h.errors.length, 1);
+                assert.deepEqual(h.controls.metadataCalls, []);
+            }
+        });
+    }
+});
+
+test('未保存的目标 JSON 与匹配表自身不能作为手动目标', async t => {
+    for (const kind of ['dirty', 'relations', 'extension'] as const) {
+        await t.test(kind, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc, field, file } = manualFixture(h);
+            if (kind === 'dirty') {
+                h.document(file, h.files.get(file)!).mutable.isDirty = true;
+                chooseFile(h, file);
+            } else {
+                h.controls.pickChoices.push(items => items.find(item => item.browse === true));
+                h.controls.dialogPaths = [h.file(kind === 'relations' ? relationStore.relationFile : 'Notes.txt', '[["ID"],[100]]')];
+            }
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.equal(h.writes.length, 0);
+            assert.deepEqual(h.information, []);
+            assert.equal(h.errors.length, 1);
+            assert.deepEqual(h.controls.targetCalls, []);
+        });
+    }
+});
+
+test('工作簿未映射、键列不唯一或读取失败时不保存手动关联', async t => {
+    for (const kind of ['unmapped', 'missingId', 'duplicateId', 'metadata', 'read'] as const) {
+        await t.test(kind, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc, field, file, target } = manualFixture(h);
+            if (kind === 'unmapped') { h.controls.targets.set(file, []); }
+            if (kind === 'missingId') { h.controls.metadata.set(relations.targetKey(target.target), new Map()); }
+            if (kind === 'duplicateId') {
+                h.controls.metadata.set(relations.targetKey(target.target), new Map(['ID', 'id'].map(name => [name, { description: '', detail: '' }])));
+            }
+            if (kind === 'metadata') { h.controls.metadataError = new Error('无法读取表头'); }
+            if (kind === 'read') { h.controls.indexReadError = new Error('无法读取工作簿'); }
+            chooseFile(h, file);
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.equal(h.writes.length, 0);
+            assert.deepEqual(h.information, []);
+            assert.equal(h.errors.length, 1);
+            assert.equal(h.controls.scans, 0);
+        });
+    }
+});
+
+test('选择目标期间源版本、关闭状态或策划表索引变化都会阻止保存', async t => {
+    for (const kind of ['version', 'close', 'invalidate', 'updating'] as const) {
+        await t.test(kind, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc, mutable, field, file } = manualFixture(h);
+            const gate = deferred<void>();
+            h.controls.targetGate = gate.promise; h.controls.targetStarted = deferred<void>();
+            chooseFile(h, file);
+            await h.ready(doc);
+            const action = h.invoke('add', doc.uri.toString(), field);
+            await h.controls.targetStarted.promise;
+            if (kind === 'version') { mutable.version++; }
+            if (kind === 'close') { mutable.isClosed = true; h.closed.fire(doc); }
+            if (kind === 'invalidate') { h.invalidated.fire(); }
+            if (kind === 'updating') { h.tableDescriptions.isUpdating = true; }
+            gate.resolve(); await action;
+            assert.equal(h.writes.length, 0);
+            assert.deepEqual(h.information, []);
+            assert.equal(h.warnings.length + h.errors.length, 1);
+            assert.deepEqual(h.controls.metadataCalls, []);
+        });
+    }
+});
+
+test('手动关联保存失败不误报成功并允许重新加载原规则', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const { doc, field, file } = manualFixture(h);
+    const previous = await h.ready(doc);
+    chooseFile(h, file);
+    h.controls.writeError = new Error('匹配表不可写');
+    await h.invoke('add', doc.uri.toString(), field);
+    assert.equal(h.writes.length, 0);
+    assert.equal(h.disk.has(doc.uri.fsPath), false);
+    assert.deepEqual(h.information, []);
+    assert.match(h.errors[0], /匹配表不可写/);
+    const restored = await h.ready(doc);
+    assert.notEqual(restored, previous);
+    assert.deepEqual(restored.rules, relations.emptyRules());
+    assert.equal(restored.loading, false);
+    assert.equal(h.controls.scans, 0);
+});
+
+test('手动添加拒绝首列 ID 和伪造字段，在显示候选或读取目标前结束', async t => {
+    for (const field of [relations.fieldKey(0, 'ID'), relations.fieldKey(1, 'Missing')]) {
+        await t.test(field, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const { doc } = manualFixture(h);
+            await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+            assert.equal(h.writes.length, 0);
+            assert.equal(h.errors.length, 1);
+            assert.deepEqual(h.controls.pickCalls, []);
+            assert.deepEqual(h.controls.fileReads, []);
+            assert.deepEqual(h.controls.targetCalls, []);
+        });
+    }
+});
 
 // 完整记录完成会在下一轮事件中合并刷新；等待该通知窗口也覆盖失败与取消路径。
 const settleDetails = () => new Promise<void>(resolve => setTimeout(resolve, 10));

@@ -57,6 +57,34 @@ export function decideRelationRules(previous: RelationRules, field: string, keys
     return next;
 }
 
+/** 手动选择只建立默认 ID 关联；已有条件、拆分或非 ID 键必须明确选择原规则。 */
+export function addManualRelation(previous: RelationRules, field: string, target: RelationTarget, existingRuleKey?: string): RelationRules {
+    const sameSource = (candidate: RelationTarget) => targetKey({ ...candidate, keyField: undefined }) === targetKey({ ...target, keyField: undefined });
+    const current = previous.fields[field];
+    if (existingRuleKey !== undefined) {
+        const candidate = current?.targets[existingRuleKey];
+        if (!candidate || !sameSource(candidate.target)) { throw new Error('所选关联规则已失效或不属于当前目标表，请重新选择。'); }
+        return decideRelationRules(previous, field, [existingRuleKey], 'accepted');
+    }
+    const related = Object.entries(current?.targets ?? {}).filter(([, candidate]) => sameSource(candidate.target));
+    const defaults = related.filter(([, candidate]) => !candidate.when && !candidate.extract && (!candidate.target.keyField || candidate.target.keyField.trim().toLowerCase() === 'id'));
+    if (defaults.length !== related.length) { throw new Error('该目标表已有条件、值提取或非 ID 键规则，请选择现有规则，不能直接添加无条件 ID 关联。'); }
+    if (!defaults.length && target.keyField && target.keyField.trim().toLowerCase() !== 'id') { throw new Error('新增手动关联使用 ID 键；非 ID 键必须选择已有规则。'); }
+    const next = structuredClone(previous);
+    const rule = next.fields[field] ?? { scanned: false, targets: {} };
+    // 兼容旧键与斜杠写法，重复点击只恢复同一条默认规则，不改变其他条件规则。
+    const accepted: TargetRule = defaults.length
+        ? structuredClone(defaults[0][1])
+        : { target: structuredClone(target), decision: 'accepted' };
+    accepted.target.file = accepted.target.file.replace(/\\/g, '/');
+    delete accepted.target.keyField;
+    accepted.decision = 'accepted';
+    for (const [key] of defaults) { delete rule.targets[key]; }
+    rule.targets[targetKey(accepted.target)] = accepted;
+    next.fields[field] = rule;
+    return next;
+}
+
 /** 值仅按标量/数组展开，组合字符串不猜测数量等数字；i18n 可从组合字符串中提取。 */
 export function referenceValues(value: unknown): string[] {
     if (Array.isArray(value)) { return [...new Set(value.flatMap(referenceValues))]; }
@@ -172,6 +200,25 @@ export class RelationIndex {
     private readonly fullRecords = new Map<string, Map<string, Promise<RelationRow[]>>>();
     private readonly recordBatches = new Map<string, { target: RelationTarget; requests: Map<string, { resolve: (rows: RelationRow[]) => void; reject: (error: unknown) => void }> }>();
     constructor(private readonly settings: TableSettings) { this.index = new TableIndex(settings); }
+
+    /** 按注册表反查所选 JSON，仅读取页签名称和表头，不扫描关联数据。 */
+    async resolveTargets(jsonFile: string): Promise<RelationTarget[]> {
+        const result = await this.index.lookup(jsonFile);
+        if (result.state === 'missing' || result.state === 'error') { throw new Error(result.message ?? '无法定位此 JSON 对应的策划表。'); }
+        const candidates = result.state === 'ready' && result.source ? [result.source] : result.candidates ?? [];
+        if (!candidates.length) { throw new Error('此 JSON 没有可选择的策划页签，请刷新策划表索引。'); }
+        const directory = path.resolve(this.settings.directory), sources = await this.index.sources();
+        const targets = new Map<string, RelationTarget>();
+        for (const candidate of candidates) {
+            const file = path.resolve(candidate.file), relative = path.relative(directory, file);
+            if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) { throw new Error('关联表路径超出策划目录。'); }
+            const source = sources.find(item => item.sheet === candidate.sheet && path.relative(path.resolve(item.file), file) === '');
+            if (!source) { throw new Error('所选策划页签已不在当前索引中，请刷新后重试。'); }
+            const target: RelationTarget = { file: relative.replace(/\\/g, '/'), sheet: source.sheet, names: [...source.names] };
+            targets.set(targetKey(target), target);
+        }
+        return [...targets.values()];
+    }
 
     /** 每层关联都按目标工作簿的字段名读取简述/备注，与 JSON 列顺序无关。 */
     metadata(target: RelationTarget): Promise<Map<string, FieldDescription>> {

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { relationCommands, type RelationResult, type RelationView } from './relationController';
 import type { CascadeField, CascadeRow } from './relationCascade';
-import { fieldKey, targetKey, valuesForRule, type RelationTarget } from './relations';
+import { fieldKey, targetKey, type RelationTarget } from './relations';
 import { noteHtml } from './hoverNote';
 import { cascadeRootKey, cascadeFieldKey, cascadeMatchKey } from './relationExpansion';
 
@@ -15,7 +15,7 @@ export function trustHoverCommands(hover: vscode.MarkdownString, ...commands: st
     hover.isTrusted = { enabledCommands: [...new Set([...trusted ?? [], ...commands])] };
 }
 
-/** 匹配表结果紧随所属字段描述；一个页签只展示一次，点击可直接打开该工作簿。 */
+/** 按匹配表展示该字段所有未排除的关联，不依赖当前值是否命中；一个页签只展示一次。 */
 export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: string, view: RelationView | undefined, openWorkbookCommand: string) {
     if (!view) { return; }
     const cells = view.cells.filter(cell => cell.column > 0 && cell.field === fieldName);
@@ -23,10 +23,8 @@ export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: st
     hover.supportThemeIcons = true;
     hover.supportHtml = true;
     const { state } = view;
-    const data = new Map(state.data.map(table => [targetKey(table.target), table]));
     const fields = new Set(cells.map(cell => fieldKey(cell.column, cell.field)));
     for (const field of fields) {
-        const fieldCells = cells.filter(cell => fieldKey(cell.column, cell.field) === field);
         hover.appendText('    ');
         if (state.loading) {
             hover.appendText('正在读取关联…');
@@ -36,10 +34,7 @@ export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: st
             const matches = new Map<string, { target: RelationTarget; keys: string[]; pending: boolean }>();
             for (const [key, candidate] of Object.entries(state.rules.fields[field]?.targets ?? {})) {
                 if (candidate.decision === 'rejected') { continue; }
-                const table = data.get(targetKey(candidate.target));
-                if (!table || !fieldCells.some(cell => valuesForRule(cell, candidate).some(value =>
-                    !value.startsWith('i18n_') && !!table.rows.get(value)?.length))) { continue; }
-                // 同一页签可有不同主键或条件规则；操作携带全部实际命中的规则键。
+                // 同一页签可有不同主键或条件规则；操作作用于该字段与此页签的全部未排除规则。
                 const identity = JSON.stringify([candidate.target.file.replaceAll('\\', '/'), candidate.target.sheet]);
                 let match = matches.get(identity);
                 if (!match) {
@@ -63,7 +58,7 @@ export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: st
                     hover.appendMarkdown(' ' + link('<span style="color:#388a34;">$(check)</span>', relationCommands.decide,
                         [view.uri, field, keys, 'accepted'], '确认当前字段与此页签的匹配关联'));
                 }
-                hover.appendMarkdown(' ' + link('<span style="color:#f14c4c;">$(close)</span>', relationCommands.decide,
+                hover.appendMarkdown(' ' + link('<span style="color:#f14c4c;">✖</span>', relationCommands.decide,
                     [view.uri, field, keys, 'rejected'], '排除当前字段与此页签的匹配关联'));
             }
         }
@@ -73,8 +68,14 @@ export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: st
         //     hover.appendMarkdown('  ' + link('$(search)', relationCommands.rescan, [view.uri, field],
         //         '仅全搜索当前字段，保留已有规则并补充待确认候选'));
         // }
-        trustHoverCommands(hover, relationCommands.clear);
-        hover.appendMarkdown('  ' + link('$(trash)', relationCommands.clear, [view.uri], '清空当前 JSON 的全部匹配规则，不影响其他 JSON'));
+        if (!state.loading) {
+            trustHoverCommands(hover, relationCommands.add);
+            hover.appendMarkdown('  ' + link('<span style="color:#388a34;">✚</span>', relationCommands.add, [view.uri, field],
+                '为当前字段手动添加关联'));
+        }
+        // 暂时隐藏清空全部匹配规则的按钮，命令保留，便于后续恢复入口。
+        // trustHoverCommands(hover, relationCommands.clear);
+        // hover.appendMarkdown('  ' + link('$(trash)', relationCommands.clear, [view.uri], '清空当前 JSON 的全部匹配规则，不影响其他 JSON'));
     }
 }
 

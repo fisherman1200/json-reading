@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { addCandidates, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
+import { addCandidates, addManualRelation, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
 import { RelationStore, isRelationFile, relationFile, normalizeRules } from '../relationStore';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -98,6 +98,85 @@ test('合并候选按钮一次确认或排除多个规则，失效参数不会�
     assert.ok(Object.values(rejected.fields[field].targets).every(rule => rule.decision === 'rejected'));
     assert.throws(() => decideRelationRules(previous, field, [keys[0], 'expired'], 'accepted'), /失效/);
     assert.throws(() => decideRelationRules(previous, field, [], 'rejected'), /失效/);
+    assert.deepEqual(previous, before);
+});
+
+test('手动关联只新增当前字段的已确认 ID 规则，重复添加不新增且不修改输入', () => {
+    const field = fieldKey(1, 'Item'), otherField = fieldKey(2, 'Item');
+    const target = { file: 'Data\\items.xlsm', sheet: '道具', names: ['itemconfig'] };
+    const otherTarget = table('矿石', []).target, previous = emptyRules();
+    previous.fields[field] = { scanned: true, targets: { [targetKey(otherTarget)]: { target: otherTarget, decision: 'rejected' } } };
+    previous.fields[otherField] = { scanned: false, targets: { [targetKey(otherTarget)]: { target: otherTarget, decision: 'pending' } } };
+    const before = structuredClone(previous), targetBefore = structuredClone(target);
+    const next = addManualRelation(previous, field, target);
+    assert.equal(next.fields[field].scanned, true);
+    assert.deepEqual(next.fields[field].targets[targetKey(target)], { target: { ...target, file: 'Data/items.xlsm' }, decision: 'accepted' });
+    assert.deepEqual(next.fields[field].targets[targetKey(otherTarget)], previous.fields[field].targets[targetKey(otherTarget)]);
+    assert.deepEqual(next.fields[otherField], previous.fields[otherField]);
+    assert.deepEqual(addManualRelation(next, field, target), next);
+    assert.deepEqual(previous, before);
+    next.fields[field].targets[targetKey(target)].target.names.push('changed');
+    assert.deepEqual(target, targetBefore);
+    const fresh = addManualRelation(emptyRules(), field, target);
+    assert.equal(fresh.fields[field].scanned, false);
+});
+
+test('手动选择复用并去重已有默认 ID 规则', () => {
+    const field = fieldKey(1, 'Item'), target = table('道具', []).target;
+    const previous = emptyRules();
+    previous.fields[field] = { scanned: true, targets: {
+        legacy: { target: { ...target, keyField: 'ID' }, decision: 'rejected' },
+        [targetKey(target)]: { target, decision: 'pending' }
+    } };
+    const next = addManualRelation(previous, field, target);
+    assert.deepEqual(Object.keys(next.fields[field].targets), [targetKey(target)]);
+    assert.deepEqual(next.fields[field].targets[targetKey(target)], { target, decision: 'accepted' });
+    assert.equal(previous.fields[field].targets.legacy.decision, 'rejected');
+});
+
+test('默认 ID 与特殊规则同时存在时也必须选择，不能静默恢复已排除的无条件规则', () => {
+    const field = fieldKey(1, 'Item'), target = table('道具', []).target;
+    const condition: TargetRule = { target, decision: 'accepted', when: { field: 'Type', values: [2] } };
+    const conditionalKey = ruleKey(target, condition.when), previous = emptyRules();
+    previous.fields[field] = { scanned: true, targets: {
+        [targetKey(target)]: { target, decision: 'rejected' }, [conditionalKey]: condition
+    } };
+    const before = structuredClone(previous);
+    assert.throws(() => addManualRelation(previous, field, target), /选择现有规则/);
+    const selected = addManualRelation(previous, field, target, conditionalKey);
+    assert.equal(selected.fields[field].targets[targetKey(target)].decision, 'rejected');
+    assert.deepEqual(selected.fields[field].targets[conditionalKey], condition);
+    const explicitDefault = addManualRelation(previous, field, target, targetKey(target));
+    assert.equal(explicitDefault.fields[field].targets[targetKey(target)].decision, 'accepted');
+    assert.deepEqual(explicitDefault.fields[field].targets[conditionalKey], condition);
+    assert.deepEqual(previous, before);
+});
+
+test('同表特殊规则必须明确选择，保留条件、提取和非 ID 键，失效或其他目标不可接受', () => {
+    const field = fieldKey(1, 'Reward'), target = table('奖励', []).target;
+    const special: TargetRule = { target: { ...target, keyField: 'GroupID' }, decision: 'rejected',
+        when: { field: 'Type', values: [1] }, extract: { separator: ':', index: 0 } };
+    const other = table('其他表', []).target, key = ruleKey(special.target, special.when, special.extract);
+    const previous = emptyRules();
+    previous.fields[field] = { scanned: false, targets: { [key]: special, [targetKey(other)]: { target: other, decision: 'pending' } } };
+    const before = structuredClone(previous);
+    assert.throws(() => addManualRelation(previous, field, target), /选择现有规则/);
+    const next = addManualRelation(previous, field, target, key);
+    assert.deepEqual(next.fields[field].targets[key], { ...special, decision: 'accepted' });
+    assert.deepEqual(next.fields[field].targets[targetKey(other)], before.fields[field].targets[targetKey(other)]);
+    assert.equal(Object.keys(next.fields[field].targets).length, 2);
+    assert.throws(() => addManualRelation(previous, field, target, targetKey(other)), /不属于当前目标表/);
+    assert.throws(() => addManualRelation(previous, field, target, 'expired'), /已失效/);
+    assert.throws(() => addManualRelation(previous, fieldKey(2, 'Other'), target, key), /已失效/);
+    assert.throws(() => addManualRelation(emptyRules(), field, special.target), /非 ID 键必须选择已有规则/);
+    for (const candidate of [
+        { target, decision: 'pending' as const, when: special.when },
+        { target, decision: 'pending' as const, extract: special.extract },
+        { target: special.target, decision: 'pending' as const }
+    ]) {
+        const rules = { fields: { [field]: { scanned: false, targets: { [ruleKey(candidate.target, candidate.when, candidate.extract)]: candidate } } } };
+        assert.throws(() => addManualRelation(rules, field, target), /选择现有规则/);
+    }
     assert.deepEqual(previous, before);
 });
 

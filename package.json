@@ -17,6 +17,11 @@
   "contributes": {
     "commands": [
       {
+        "command": "json-reading.addRelation",
+        "title": "JSON Reading: 手动添加当前字段关联",
+        "icon": "$(add)"
+      },
+      {
         "command": "json-reading.rescanRelations",
         "title": "JSON Reading: 手动全搜索当前字段的关联",
         "icon": "$(search)"

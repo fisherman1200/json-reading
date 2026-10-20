@@ -62,6 +62,50 @@ test('normalizes front/back-end prefixes and JSON/CSV extensions', () => {
     }
 });
 
+test('手动目标 JSON 通过注册表定位 XLSM 页签和所有别名，只读取数据表表头', async t => {
+    const { directory, settings } = await fixture(t);
+    await fs.writeFile(path.join(directory, 'Data', '注册表.xlsm'), workbook('注册', registryRows +
+        `<row r="3">${cell('A3', '奖励')}${cell('B3', '@RewardAlias')}</row>`));
+    const reader = require('../workbookReader') as typeof import('../workbookReader');
+    const original = reader.readSheetRows, reads: { file: string; limit: number }[] = [];
+    t.mock.method(reader, 'readSheetRows', (...args: Parameters<typeof original>) => {
+        reads.push({ file: args[0], limit: args[2] });
+        return original(...args);
+    });
+    const targets = await new RelationIndex(settings).resolveTargets(path.join(directory, 'ClientConfig', 'RewardConfigData.json'));
+    assert.deepEqual(targets, [{ file: 'Data/unknown-name.xlsm', sheet: '奖励', names: ['rewardconfig', 'rewardalias'] }]);
+    const tableReads = reads.filter(read => path.basename(read.file) !== '注册表.xlsm');
+    assert.deepEqual(tableReads, [{ file: path.join(directory, 'Data', 'unknown-name.xlsm'), limit: 5 }]);
+});
+
+test('手动目标反查返回所有重名页签候选并尊重该 JSON 的工作簿选择', async t => {
+    const { directory, settings } = await fixture(t);
+    await fs.writeFile(path.join(directory, 'copy.xlsm'), workbook('奖励', dataRows));
+    const index = new RelationIndex(settings), targets = await index.resolveTargets('RewardConfigData.json');
+    assert.deepEqual(targets.map(target => target.file).sort(), ['Data/unknown-name.xlsm', 'copy.xlsm']);
+    assert.ok(targets.every(target => target.sheet === '奖励' && target.names.join() === 'rewardconfig'));
+    const selected = await new RelationIndex({ ...settings, overrides: { RewardConfigData: 'copy.xlsm' } }).resolveTargets('RewardConfigData.json');
+    assert.deepEqual(selected, [{ file: 'copy.xlsm', sheet: '奖励', names: ['rewardconfig'] }]);
+    await assert.rejects(new RelationIndex({ ...settings, overrides: { RewardConfigData: '../outside.xlsm' } }).resolveTargets('RewardConfigData.json'), /工作簿选择/);
+});
+
+test('手动目标不存在或索引读取失败时抛出中文错误，不返回空候选冒充成功', async t => {
+    const { directory, settings } = await fixture(t);
+    await assert.rejects(new RelationIndex(settings).resolveTargets('UnknownData.json'), /注册表中没有此 JSON/);
+    await fs.writeFile(path.join(directory, 'Data', 'unknown-name.xlsm'), '损坏的工作簿');
+    await assert.rejects(new RelationIndex(settings).resolveTargets('RewardConfigData.json'), /策划表读取失败/);
+});
+
+test('目标候选必须位于策划目录内且仍属于当前页签索引', async t => {
+    const { directory, settings } = await fixture(t);
+    const outside = { file: path.resolve(directory, '..', 'outside.xlsm'), sheet: '奖励', names: ['rewardconfig'] };
+    const lookup = t.mock.method(TableIndex.prototype, 'lookup', async () => ({ state: 'ready' as const, source: outside }));
+    t.mock.method(TableIndex.prototype, 'sources', async () => [outside]);
+    await assert.rejects(new RelationIndex(settings).resolveTargets('RewardConfigData.json'), /超出策划目录/);
+    lookup.mock.mockImplementation(async () => ({ state: 'ready' as const, source: { ...outside, file: path.join(directory, 'not-indexed.xlsm') } }));
+    await assert.rejects(new RelationIndex(settings).resolveTargets('RewardConfigData.json'), /不在当前索引/);
+});
+
 test('每层关联说明按 XLSM 字段名读取第 3/2 行，忽略无字段名辅助列并缓存页签', async t => {
     const { directory, settings } = await fixture(t);
     const target = { file: 'Data/unknown-name.xlsm', sheet: '奖励', names: [] };

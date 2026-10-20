@@ -6,10 +6,10 @@ import { runInNewContext } from 'node:vm';
 import { createFieldHover, openWorkbookCommand } from '../fieldHover';
 import { HoverRefresh } from '../hoverRefresh';
 import { resolveRelationDocument } from '../relationDocument';
-import { relationCommands, type RelationView } from '../relationController';
+import { RelationController, relationCommands, type RelationView } from '../relationController';
 import { cascadeRootKey, cascadeFieldKey, cascadeMatchKey, cascadeBranchKeys } from '../relationExpansion';
 import type { CascadeField } from '../relationCascade';
-import { addCandidates, emptyRules, parseRelations, fieldKey, targetKey, ruleKey, type TargetData, type TargetRule } from '../relations';
+import { addCandidates, decideRelationRules, emptyRules, parseRelations, fieldKey, targetKey, ruleKey, type TargetData, type TargetRule } from '../relations';
 
 function decodeHtml(value: string): string {
     return value.replace(/&(#(?:x[\da-f]+|\d+)|nbsp|quot|apos|lt|gt|amp);/gi, (_, code: string) => {
@@ -183,9 +183,8 @@ suite('策划表悬浮提示', () => {
         assert.ok(visible.indexOf('奖励道具') < visible.indexOf('已匹配: '));
         assert.ok(visible.indexOf('已匹配: ') < visible.indexOf('备注'));
         assert.ok(visible.indexOf('备注') < visible.indexOf('字段名: Name'));
-        assert.ok(!visible.includes('道具备注'));
-        assert.deepStrictEqual(noteTitles(hover.value), ['道具备注']);
-        assert.match(hover.value, /<span[^>]*style="color:var\(--vscode-textLink-foreground\);"[^>]*><u>备注<\/u><\/span>/);
+        assert.ok(visible.includes('备注: 道具备注'));
+        assert.deepStrictEqual(noteTitles(hover.value), []);
         assert.ok(visible.indexOf('无匹配') > visible.indexOf('描述: 名称'));
         assert.ok(visible.indexOf('无匹配') < visible.indexOf('策划表: '));
         assert.ok(visible.indexOf('中文: ') > visible.indexOf('策划表: '));
@@ -200,38 +199,76 @@ suite('策划表悬浮提示', () => {
         const workbook = hover.value.match(/command:json-reading\.openSourceWorkbook\?([^\s)]+)/)!;
         assert.deepStrictEqual(JSON.parse(decodeURIComponent(workbook[1])), [path.resolve(view.state.tableDirectory, target.file), target.sheet]);
         assert.ok(!hover.value.includes('command:json-reading.rescanRelations'));
-        const clear = hover.value.match(/command:json-reading\.clearRelations\?([^\s)]+)/)!;
-        assert.deepStrictEqual(JSON.parse(decodeURIComponent(clear[1])), [view.uri]);
+        assert.ok(!hover.value.includes('command:json-reading.clearRelations'));
+        assert.ok(!hover.value.includes('$(trash)'));
+        const additions = [...hover.value.matchAll(/command:json-reading\.addRelation\?([^\s)]+)/g)];
+        assert.deepStrictEqual(additions.map(match => JSON.parse(decodeURIComponent(match[1]))), [
+            [view.uri, fieldKey(1, 'Item')], [view.uri, fieldKey(2, 'Name')]
+        ]);
         const trusted = typeof hover.isTrusted === 'object' ? hover.isTrusted.enabledCommands : [];
-        for (const command of [openWorkbookCommand, relationCommands.decide, relationCommands.clear, 'json-reading.syncTables']) {
+        for (const command of [openWorkbookCommand, relationCommands.decide, relationCommands.add, 'json-reading.syncTables']) {
             assert.ok(trusted?.includes(command));
         }
+        assert.ok(!trusted?.includes(relationCommands.clear));
         assert.ok(!trusted?.includes(relationCommands.details));
-        assert.ok(hover.value.includes('color:#388a34;'));
-        assert.ok(hover.value.includes('color:#f14c4c;'));
+        assert.ok(hover.value.includes('<span style="color:#388a34;">$(check)</span>'));
+        assert.ok(hover.value.includes('<span style="color:#f14c4c;">✖</span>'));
         rules.fields[fieldKey(1, 'Item')].targets[targetKey(target)].decision = 'rejected';
         const excluded = createFieldHover(['Item'], undefined, undefined, view);
         assert.ok(!visibleHtml(excluded.value).includes('已匹配: '));
         assert.ok(excluded.value.includes('无匹配'));
         const primary = createFieldHover(['ID'], undefined, undefined, view);
         assert.ok(!primary.value.includes('json-reading.rescanRelations'));
+        assert.ok(!primary.value.includes('json-reading.addRelation'));
         assert.ok(!visibleHtml(primary.value).includes('中文: '));
         assert.ok(!primary.value.includes('不执行'));
         const name = createFieldHover(['Name'], undefined, undefined, view);
         assert.ok(name.value.includes('无匹配'));
         assert.ok(visibleHtml(name.value).indexOf('无匹配') < visibleHtml(name.value).indexOf('中文: '));
     });
-    test('同页签多个值和适用规则合并一次展示，按钮批量决定且排除不适用规则', () => {
+    test('手动添加按钮精确绑定编码 URI 和同名字段列，读取中与匹配表自身不显示入口', () => {
+        const field = '道具 [ID]&';
+        const parsed = parseRelations(JSON.stringify([['ID', field, field], [1, 100, 200]]));
+        const view: RelationView = { uri: vscode.Uri.file('D:\\项目 空格\\A #&[1]Data.json').toString(), cells: parsed.cells,
+            state: { tableDirectory: path.resolve('策划表'), parsed, rules: emptyRules(), data: [], translations: new Map(), loading: false } };
+        const hover = createFieldHover(['ID', field], undefined, undefined, view);
+        const links = [...hover.value.matchAll(/\[<span style="color:#388a34;">✚<\/span>\]\(command:json-reading\.addRelation\?([^\s)]+)/g)];
+        assert.strictEqual(links.length, 2);
+        assert.deepStrictEqual(links.map(match => JSON.parse(decodeURIComponent(match[1]))), [
+            [view.uri, fieldKey(1, field)], [view.uri, fieldKey(2, field)]
+        ]);
+        assert.strictEqual(visibleHtml(hover.value).match(/无匹配/g)?.length, 2, '没有当前值命中时也允许添加字段规则');
+        assert.deepStrictEqual(typeof hover.isTrusted === 'object' ? [...hover.isTrusted.enabledCommands ?? []].sort() : [],
+            [relationCommands.add]);
+        assert.ok(hover.supportThemeIcons);
+        assert.ok(!hover.value.includes('command:json-reading.rescanRelations'));
+        view.state.loading = true;
+        const loading = createFieldHover([field], undefined, undefined, view);
+        assert.ok(!loading.value.includes('command:json-reading.addRelation'));
+        assert.ok(!(typeof loading.isTrusted === 'object' && loading.isTrusted.enabledCommands?.includes(relationCommands.add)));
+        const mapping = { uri: vscode.Uri.file('D:\\项目 空格\\extensions\\json_reading\\relations.json'), languageId: 'json' } as vscode.TextDocument;
+        // 匹配表必须在访问实例缓存或读取文件之前被拒绝，无需创建第二个已注册命令的控制器。
+        const mappingView = RelationController.prototype.view.call({} as RelationController, mapping, 0);
+        assert.strictEqual(mappingView, undefined);
+        assert.ok(!createFieldHover([field], undefined, undefined, mappingView).value.includes('command:json-reading.addRelation'));
+    });
+    test('同页签全部未排除规则合并展示，确认和排除包含未命中条件与不同目标键', () => {
         const parsed = parseRelations('[["ID","Type","Rewards"],[1,2,"1001:20,1002:30"]]');
         const target = { file: '矿石.xlsm', sheet: '矿石', names: [], keyField: 'OreID' };
         const candidate: TargetRule = { target, decision: 'accepted', when: { field: 'Type', values: [2] }, extract: { listSeparator: ',', separator: ':', index: 0 } };
         const ruleId = ruleKey(target, candidate.when, candidate.extract), field = fieldKey(2, 'Rewards');
         const another: TargetRule = { ...candidate, when: undefined };
         const anotherId = ruleKey(target, another.when, another.extract);
-        const inactive: TargetRule = { ...candidate, when: { field: 'Type', values: [3] } };
+        const inactive: TargetRule = { ...candidate, decision: 'pending', when: { field: 'Type', values: [3] } };
         const inactiveId = ruleKey(target, inactive.when, inactive.extract);
+        const alternate: TargetRule = { ...candidate, target: { ...target, keyField: 'ResourceID' } };
+        const alternateId = ruleKey(alternate.target, alternate.when, alternate.extract);
+        const rejected: TargetRule = { ...candidate, decision: 'rejected', when: { field: 'Type', values: [4] } };
+        const rejectedId = ruleKey(target, rejected.when, rejected.extract);
         const rules = emptyRules();
-        rules.fields[field] = { scanned: true, targets: { [ruleId]: candidate, [anotherId]: another, [inactiveId]: inactive } };
+        rules.fields[field] = { scanned: true, targets: {
+            [ruleId]: candidate, [anotherId]: another, [inactiveId]: inactive, [alternateId]: alternate, [rejectedId]: rejected
+        } };
         const data: TargetData[] = [{ target, rows: new Map([
             ['1001', [{ id: '1001', row: 6, values: [['Name', '铁矿']] }]],
             ['1002', [{ id: '1002', row: 7, values: [['Name', '铜矿']] }]]
@@ -240,22 +277,78 @@ suite('策划表悬浮提示', () => {
             state: { tableDirectory: path.resolve('策划表'), parsed, rules, data, translations: new Map<string, string>(), loading: false } };
         const hover = createFieldHover(['Rewards'], undefined, undefined, view);
         assert.strictEqual(hover.value.match(/command:json-reading\.openSourceWorkbook\?/g)?.length, 1);
-        assert.strictEqual(hover.value.match(/command:json-reading\.decideRelation\?/g)?.length, 1);
+        assert.strictEqual(hover.value.match(/command:json-reading\.decideRelation\?/g)?.length, 2);
         assert.ok(!hover.value.includes('Rewards: '));
         assert.ok(!hover.value.includes('OreID'));
-        const decision = hover.value.match(/command:json-reading\.decideRelation\?([^\s)]+)/)!;
-        assert.deepStrictEqual(JSON.parse(decodeURIComponent(decision[1])), [view.uri, field, [ruleId, anotherId], 'rejected']);
+        assert.ok(hover.value.includes('<span style="color:#388a34;">$(check)</span>'), '未命中当前条件的待确认规则仍有确认入口');
+        const decisions = [...hover.value.matchAll(/command:json-reading\.decideRelation\?([^\s)]+)/g)];
+        assert.deepStrictEqual(decisions.map(match => JSON.parse(decodeURIComponent(match[1]))), [
+            [view.uri, field, [ruleId, anotherId, inactiveId, alternateId], 'accepted'],
+            [view.uri, field, [ruleId, anotherId, inactiveId, alternateId], 'rejected']
+        ]);
         data[0].rows.clear();
-        assert.ok(createFieldHover(['Rewards'], undefined, undefined, view).value.includes('无匹配'));
+        assert.strictEqual(createFieldHover(['Rewards'], undefined, undefined, view).value, hover.value, '摘要不依赖目标表是否有当前值记录');
+        view.state.data = [];
+        for (const cell of view.cells) { cell.values = []; }
+        const rulesOnly = createFieldHover(['Rewards'], undefined, undefined, view);
+        assert.strictEqual(rulesOnly.value, hover.value, '只保留规则时仍能查看和操作关联');
+        assert.ok(!rulesOnly.value.includes('关联结果'), '规则摘要不能凭空生成底部记录');
     });
-    test('加载失败和加载中不误报无匹配，匹配只依据当前单元格', () => {
+    test('道具关联排除后，无当前值命中的已确认 AB 关联仍可见且可单独排除', () => {
+        const parsed = parseRelations('[["ID","Type","itemId","Other"],[1,1,11012001,11012001]]');
+        const field = fieldKey(2, 'itemId'), otherField = fieldKey(3, 'Other');
+        const item = { file: 'Data/Item.xlsm', sheet: '道具', names: ['itemconfig'] };
+        const ab = { file: 'Data/ABTest.xlsm', sheet: 'AB', names: ['abconfig'] };
+        const unrelated = { file: 'Data/Other.xlsm', sheet: '其他目标', names: [] };
+        const itemRule: TargetRule = { target: item, decision: 'rejected' };
+        const abRule: TargetRule = { target: ab, decision: 'accepted', when: { field: 'Type', values: [2] } };
+        const abRejected: TargetRule = { ...abRule, decision: 'rejected', when: { field: 'Type', values: [3] } };
+        const otherRule: TargetRule = { target: unrelated, decision: 'accepted' };
+        const abKey = ruleKey(ab, abRule.when), excludedKey = ruleKey(ab, abRejected.when);
+        const rules = emptyRules();
+        rules.fields[field] = { scanned: true, targets: {
+            [ruleKey(item)]: itemRule, [abKey]: abRule, [excludedKey]: abRejected, [ruleKey(unrelated)]: otherRule
+        } };
+        rules.fields[otherField] = { scanned: true, targets: { [abKey]: { ...abRule, decision: 'pending' } } };
+        const view: RelationView = { uri: 'file:///project/BoxRewardConfigData.json',
+            cells: parsed.cells.filter(cell => cell.field === 'itemId'),
+            state: { tableDirectory: path.resolve('策划表'), parsed, rules,
+                data: [{ target: item, rows: new Map([['11012001', [{ id: '11012001', row: 6, values: [['Name', '经验水晶']] }]]]) }],
+                translations: new Map(), loading: false }, results: [] };
+        const hover = createFieldHover(['itemId'], undefined, undefined, view);
+        assert.ok(visibleHtml(hover.value).includes('已匹配: '));
+        const links = [...hover.value.matchAll(/command:json-reading\.openSourceWorkbook\?([^\s)]+)/g)];
+        assert.deepStrictEqual(links.map(match => JSON.parse(decodeURIComponent(match[1]))), [
+            [path.resolve(view.state.tableDirectory, ab.file), ab.sheet],
+            [path.resolve(view.state.tableDirectory, unrelated.file), unrelated.sheet]
+        ]);
+        assert.ok(!hover.value.includes('$(check)'), '已确认目标不显示绿勾');
+        assert.ok(hover.value.includes('<span style="color:#f14c4c;">✖</span>'));
+        assert.ok(!hover.value.includes('关联结果') && !hover.value.includes('经验水晶'));
+        const actions = [...hover.value.matchAll(/command:json-reading\.decideRelation\?([^\s)]+)/g)]
+            .map(match => JSON.parse(decodeURIComponent(match[1])) as [string, string, string[], 'accepted' | 'rejected']);
+        assert.deepStrictEqual(actions, [
+            [view.uri, field, [abKey], 'rejected'],
+            [view.uri, field, [ruleKey(unrelated)], 'rejected']
+        ]);
+        const next = decideRelationRules(rules, actions[0][1], actions[0][2], actions[0][3]);
+        assert.strictEqual(next.fields[field].targets[abKey].decision, 'rejected');
+        for (const key of [ruleKey(item), excludedKey, ruleKey(unrelated)]) {
+            assert.deepStrictEqual(next.fields[field].targets[key], rules.fields[field].targets[key]);
+        }
+        assert.deepStrictEqual(next.fields[otherField], rules.fields[otherField]);
+    });
+    test('关联摘要不依赖当前单元格命中，初始加载失败和加载中仍显示相应状态', () => {
         const parsed = parseRelations('[["ID","Item"],[1,100],[2,200]]');
         const target = { file: '矿石.xlsm', sheet: '矿石', names: [] };
         const data: TargetData[] = [{ target, rows: new Map([['200', [{ id: '200', row: 6, values: [] }]]]) }];
         const rules = addCandidates(emptyRules(), parsed, data, true);
         const view: RelationView = { uri: 'file:///project/TestData.json', cells: [parsed.cells[0]],
             state: { tableDirectory: path.resolve('策划表'), parsed, rules, data, translations: new Map(), loading: false } };
-        assert.ok(createFieldHover(['Item'], undefined, undefined, view).value.includes('无匹配'));
+        const configured = createFieldHover(['Item'], undefined, undefined, view);
+        assert.ok(visibleHtml(configured.value).includes('已匹配: '));
+        assert.ok(!configured.value.includes('无匹配'));
+        assert.ok(!configured.value.includes('关联结果'), '当前值无记录时只显示配置关系');
         view.state.loading = true;
         const loading = createFieldHover(['Item'], undefined, undefined, view);
         assert.ok(loading.value.includes('正在读取关联'));
@@ -321,7 +414,7 @@ suite('策划表悬浮提示', () => {
         for (const value of ['摘要', '<img', '[执行](command:bad)', '$(sync)', '已匹配', '匹配记录', '全部字段']) {
             assert.ok(!records.includes(value), value);
         }
-        assert.ok(!hover.value.includes('color:#388a34;'));
+        assert.ok(!hover.value.includes('$(check)'));
         assert.ok(!createFieldHover(['ID'], undefined, undefined, view).value.includes('关联结果'));
         assert.ok(!createFieldHover(['Name'], undefined, undefined, view).value.includes('关联结果'));
     });
@@ -372,7 +465,7 @@ suite('策划表悬浮提示', () => {
         assert.ok(!text.includes('奖励道具'));
         assert.ok(visibleHtml(hover).indexOf('关联结果') > visibleHtml(hover).indexOf('策划表: '));
         assert.ok(visibleHtml(hover).indexOf('中文: 外层宝箱名称') > visibleHtml(hover).indexOf('用于在星羽祈愿中抽取翅膀'));
-        for (const value of ['固定值（固定值）', 'range（）', '未展开旧内容', 'Item.xlsm', 'ItemBox.xlsm', 'ID =', '$(search)', 'color:#388a34;']) {
+        for (const value of ['固定值（固定值）', 'range（）', '未展开旧内容', 'Item.xlsm', 'ItemBox.xlsm', 'ID =', '$(search)', '$(check)']) {
             assert.ok(!records.includes(value), value);
         }
         assertRecordLayout(records);
@@ -589,7 +682,8 @@ suite('策划表悬浮提示', () => {
         assert.match(collapsed, /200▶/);
         assert.ok(visibleHtml(initial.value).includes('字段名: Item'));
         assert.ok(visibleHtml(initial.value).includes('描述: 顶层说明：保留'));
-        assert.deepStrictEqual(noteTitles(initial.value), ['备注：原文']);
+        assert.ok(visibleHtml(initial.value).includes('备注: 备注：原文'));
+        assert.deepStrictEqual(noteTitles(initial.value), []);
 
         const root = cascadeRootKey(1, 'Item', target), ref = cascadeFieldKey(root, 1, 'ref');
         const next = cascadeFieldKey(cascadeMatchKey(ref, item), 1, 'next');
@@ -742,36 +836,45 @@ suite('策划表悬浮提示', () => {
             assert.strictEqual(editor.selection, selection);
         } finally { refresh.dispose(); }
     });
-    test('显示简述与来源，备注全文只放原生 title，并保留顶部留白', () => {
+    test('顶层备注直接显示全文，续行对齐并保留空行、来源和顶部留白', () => {
         const hover = createFieldHover(['Type'], {
             state: 'ready', source: { file: 'example.xlsm', sheet: '奖励' },
-            fields: new Map([['Type', { description: '奖励类型', detail: '第一种\n第二种' }]])
+            fields: new Map([['Type', { description: '奖励类型', detail: '第一种\r\n\r\n第二种' }]])
         });
         assert.ok(hover.value.startsWith('&nbsp;\n\n'));
         const visible = visibleHtml(hover.value);
         for (const value of ['Type', '奖励类型', '备注', 'example', '奖励']) {
             assert.ok(visible.includes(value), value);
         }
-        assert.ok(!visible.includes('第一种') && !visible.includes('第二种'));
-        assert.deepStrictEqual(noteTitles(hover.value), ['第一种\n第二种']);
+        assert.ok(visible.includes('第一种') && visible.includes('第二种'));
+        assert.deepStrictEqual(noteTitles(hover.value), []);
+        assert.deepStrictEqual(recordRows(hover.value).map(row => row.map(cell => cell.text)), [
+            ['备注: ', '第一种'], ['', ''], ['', '第二种']
+        ]);
         const identical = createFieldHover(['Same', 'Empty'], { state: 'ready', fields: new Map([
             ['Same', { description: '同一说明', detail: '同一说明' }], ['Empty', { description: '无备注', detail: ' \r\n ' }]
         ]) });
-        assert.deepStrictEqual(noteTitles(identical.value), ['同一说明']);
+        assert.deepStrictEqual(noteTitles(identical.value), []);
+        assert.strictEqual(visibleHtml(identical.value).match(/同一说明/g)?.length, 2, '备注与简述相同也应显示全文');
+        assert.deepStrictEqual(recordRows(identical.value).map(row => row.map(cell => cell.text)), [['备注: ', '同一说明']]);
         assert.deepStrictEqual(hover.isTrusted, { enabledCommands: [openWorkbookCommand] });
         assert.ok(hover.supportHtml);
     });
     test('缺少表格时保留字段名，表格说明中的 Markdown 作为纯文本', () => {
         assert.ok(createFieldHover(['ID']).value.includes('ID'));
+        const detail = '[执行](command:bad) <>& $(sync)';
         const hover = createFieldHover(['ID'], {
-            state: 'ready', fields: new Map([['ID', { description: '**标题**', detail: '[执行](command:bad)' }]])
+            state: 'ready', fields: new Map([['ID', { description: '**标题**', detail }]])
         });
         assert.ok(!hover.value.includes('**标题**'));
         assert.ok(!hover.value.includes('[执行](command:bad)'));
+        assert.ok(!hover.value.includes('<>&') && !hover.value.includes('$(sync)'));
+        assert.ok(visibleHtml(hover.value).includes(detail), 'HTML、Markdown 与 codicon 语法应作为备注原文显示');
+        assert.ok(!hover.isTrusted, '备注原文不能增加可执行命令权限');
     });
     test('注册策划目录选择、索引刷新和重名工作簿选择命令', async () => {
         const commands = await vscode.commands.getCommands(true);
-        for (const command of ['selectTableDirectory', 'refreshTableIndex', 'selectTableWorkbook', 'openSourceWorkbook', 'syncTables', 'toggleRelationExpansion']) {
+        for (const command of ['selectTableDirectory', 'refreshTableIndex', 'selectTableWorkbook', 'openSourceWorkbook', 'syncTables', 'addRelation', 'toggleRelationExpansion']) {
             assert.ok(commands.includes('json-reading.' + command));
         }
     });
