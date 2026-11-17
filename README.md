@@ -26,20 +26,22 @@ JSON Reading 是一个面向表格型 JSON / JSONC 配置的 VS Code 扩展。�
 
 ## 安装
 
-需要 **VS Code 桌面版 1.140.0 或更高版本**。当前提供本地构建的 `json-reading-0.0.2.vsix`，发布者标识为 `Fishererer`，尚未发布到扩展商店。允许免费安装和使用（包括商业工作），修改、再分发等其他权利保留；完整条款见 [LICENSE](LICENSE)。
+需要 **VS Code 桌面版 1.140.0 或更高版本**。扩展已发布到 [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Fishererer.json-reading)，发布者标识为 `Fishererer`。允许免费安装和使用（包括商业工作），修改、再分发等其他权利保留；完整条款见 [LICENSE](LICENSE)。
 
 安装扩展：
 
-1. 获取维护者提供的安装包，或按下方“开发与打包”步骤生成安装包。
-2. 打开 VS Code 左侧的**扩展**视图。
-3. 点击右上角 **… → 从 VSIX 安装…**，选择安装包。
-4. 按提示重新加载窗口。
+1. 打开 VS Code 左侧的**扩展**视图。
+2. 搜索 `@id:Fishererer.json-reading`，点击**安装**。
+3. 已安装的用户可在扩展页面点击**更新**，或启用自动更新。
+4. 如有提示，重新加载窗口。
 
-也可以在安装包所在目录执行：
+也可以通过命令行安装商店版本：
 
 ```sh
-code --install-extension json-reading-0.0.2.vsix
+code --install-extension Fishererer.json-reading
 ```
+
+离线安装可使用维护者提供的 `json-reading-0.0.3.vsix`，在扩展视图右上角选择 **… → 从 VSIX 安装…**。
 
 安装和日常使用无需安装 Node.js。字段提示及 XLSM 内容读取也不要求安装 Excel；打开工作簿、自动定位页签和 Git 同步的环境要求见[其他说明](#其他说明)。
 
