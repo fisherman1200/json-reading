@@ -46,10 +46,11 @@ async function main() {
     ]);
     const target = { file: '演示积分.xlsm', sheet: '积分', names: ['pointsconfig'] };
     const { ruleKey, fieldKey } = require('../out/relations');
+    const { serializeRules } = require('../out/relationStore');
     const extract = { separator: ':', index: 0 };
     const rule = { target, decision: 'accepted', extract };
-    await fs.writeFile(path.join(project, 'extensions/json_reading/relations.json'), JSON.stringify({ version: 1, files: {
-        'ProductConfigData.json': { fields: { [fieldKey(2, 'exchangeCost')]: { scanned: true, targets: { [ruleKey(target, undefined, extract)]: rule } } } }
+    await fs.writeFile(path.join(project, 'extensions/json_reading/relations.json'), JSON.stringify({ version: 2, files: {
+        'ProductConfigData.json': serializeRules({ fields: { [fieldKey(2, 'exchangeCost')]: { scanned: true, targets: { [ruleKey(target, undefined, extract)]: rule } } } })
     } }, null, 2));
     await fs.writeFile(path.join(project, '.vscode/settings.json'), JSON.stringify({
         'json-reading.tables.directory': tables, 'json-reading.fieldHints.displayMode': 'all',

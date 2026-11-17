@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { targetKey, ruleKey, fieldKey } = require('../out/relations');
-const { normalizeRules } = require('../out/relationStore');
+const { normalizeRules, serializeRules, deserializeRules } = require('../out/relationStore');
 
 const args = process.argv.slice(2);
 const root = path.resolve(args[0] || 'D:/cn');
@@ -23,7 +23,7 @@ for (const target of inventory.catalogue) {
 const actualField = (names, wanted) => names.find(name => name === wanted) ??
     (names.filter(name => name.toLowerCase() === wanted.toLowerCase()).length === 1
         ? names.find(name => name.toLowerCase() === wanted.toLowerCase()) : undefined);
-const result = { version: 1, files: {} };
+const result = { version: 2, files: {} };
 let totalFields = 0, i18nFields = 0;
 const unsupported = [];
 for (const config of inventory.configs) {
@@ -92,10 +92,11 @@ const existingPath = path.join(root, 'extensions/json_reading/relations.json');
 let preserved = 0;
 if (fs.existsSync(existingPath)) {
     const existing = JSON.parse(fs.readFileSync(existingPath, 'utf8').replace(/^\uFEFF/, ''));
-    if (existing?.version !== 1 || !existing.files || typeof existing.files !== 'object' || Array.isArray(existing.files)) {
+    if (![1, 2].includes(existing?.version) || !existing.files || typeof existing.files !== 'object' || Array.isArray(existing.files)) {
         throw new Error('现有匹配表结构或版本无效，请先修复；不会覆盖工程文件。');
     }
-    for (const [file, rules] of Object.entries(existing.files || {})) {
+    for (const [file, stored] of Object.entries(existing.files || {})) {
+        const rules = existing.version === 2 ? deserializeRules(stored) : normalizeRules(stored);
         if (!result.files[file]) { result.files[file] = rules; continue; }
         for (const [field, rule] of Object.entries(normalizeRules(rules).fields)) {
             if (!result.files[file].fields[field]) { continue; }
@@ -119,7 +120,7 @@ if (fs.existsSync(existingPath)) {
 let mappedFields = 0, rules = 0, conditions = 0, extractions = 0, targetKeys = 0, matchedJson = 0;
 for (const [file, value] of Object.entries(result.files)) {
     const normalized = normalizeRules(value);
-    result.files[file] = normalized;
+    result.files[file] = serializeRules(normalized);
     let count = 0;
     for (const rule of Object.values(normalized.fields)) {
         const targets = Object.values(rule.targets);

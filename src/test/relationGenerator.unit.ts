@@ -5,7 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fieldKey, targetKey, type RelationRules } from '../relations';
+import { fieldKey, targetKey } from '../relations';
+import { deserializeRules, type StoredRelationRules } from '../relationStore';
 
 test('离线生成器覆盖清单、拒绝歧义目标并保留已有确认/排除', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-relations-generator-'));
@@ -50,9 +51,12 @@ test('离线生成器覆盖清单、拒绝歧义目标并保留已有确认/排�
         ]);
         await promisify(execFile)(process.execPath, [path.resolve(__dirname, '../../scripts/build-client-relation-map.cjs'),
             root, path.join(root, 'inventory.json'), output, path.join(root, 'proposals.json')]);
-        const result = JSON.parse(await fs.readFile(output, 'utf8')) as { files: Record<string, RelationRules> };
-        const fields = result.files[source].fields;
-        assert.deepEqual(result.files[other].fields, {});
+        const result = JSON.parse(await fs.readFile(output, 'utf8')) as { version: number; files: Record<string, StoredRelationRules> };
+        assert.equal(result.version, 2);
+        assert.equal(result.files[source].scanComplete, true);
+        assert.equal(result.files[source].results[fieldKey(2, 'Type')], undefined);
+        const fields = deserializeRules(result.files[source]).fields;
+        assert.deepEqual(deserializeRules(result.files[other]).fields, {});
         assert.equal(fields[fieldKey(0, 'ID')], undefined);
         assert.deepEqual(fields[fieldKey(2, 'Type')], { scanned: true, targets: {} });
         assert.equal(fields[field].targets[targetKey(known)].decision, 'rejected');
@@ -71,5 +75,11 @@ test('离线生成器覆盖清单、拒绝歧义目标并保留已有确认/排�
         assert.equal(summary.omitted.length, 2);
         assert.equal(summary.preserved, 2);
         assert.equal(summary.i18nFields, 1);
+        // 新格式也能作为下一次生成的输入，保留用户决定和清单外文件。
+        result.files['Extra.json'] = result.files[source];
+        await write(path.join(root, 'extensions/json_reading/relations.json'), result);
+        await promisify(execFile)(process.execPath, [path.resolve(__dirname, '../../scripts/build-client-relation-map.cjs'),
+            root, path.join(root, 'inventory.json'), output, path.join(root, 'proposals.json')]);
+        assert.deepEqual(JSON.parse(await fs.readFile(output, 'utf8')), result);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

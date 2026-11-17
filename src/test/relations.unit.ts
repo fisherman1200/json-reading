@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { extractionChoices, addCandidates, addManualRelation, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
-import { RelationStore, isRelationFile, relationFile, normalizeRules } from '../relationStore';
+import { RelationStore, isRelationFile, relationFile, normalizeRules, serializeRules, deserializeRules, type StoredRelationRules } from '../relationStore';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -288,6 +288,77 @@ test('同一目标多条条件规则与不同目标键分别保存；旧规则�
     Object.values(invalid.fields[field].targets)[0].extract!.index = 0;
     Object.values(invalid.fields[field].targets)[0].when!.values = [];
     assert.throws(() => normalizeRules(invalid), /条件/);
+});
+
+test('精简结果省略空字段并保留扫描范围、部分扫描及手动规则', () => {
+    const parsed = parseRelations(JSON.stringify([
+        ['ID', ...Array.from({ length: 100 }, (_, i) => `Field${i}`)],
+        [1, ...Array(100).fill(999)]
+    ]));
+    const rules = addCandidates(emptyRules(), parsed, [], true);
+    const compact = serializeRules(rules);
+    assert.equal(compact.scanComplete, true);
+    assert.deepEqual(compact.results, {});
+    assert.equal(compact.scannedFields, undefined);
+    assert.ok(JSON.stringify(compact, null, 2).length < JSON.stringify(rules, null, 2).length / 2);
+    assert.deepEqual(deserializeRules(compact), rules);
+    assert.equal(deserializeRules(compact).fields[fieldKey(101, 'NewField')], undefined);
+
+    const manual = fieldKey(101, 'Manual');
+    const partial = addManualRelation(rules, manual, table('Items', []).target);
+    const stored = serializeRules(partial);
+    assert.equal(stored.scanComplete, false);
+    assert.equal(stored.scannedFields?.length, 100);
+    assert.deepEqual(Object.keys(stored.results), [manual]);
+    assert.deepEqual(deserializeRules(stored), partial);
+    assert.deepEqual(deserializeRules(serializeRules(emptyRules())), emptyRules());
+});
+
+test('旧匹配表读取后保存为精简格式，其他源文件同步迁移且重复保存稳定', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-reading-migrate-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const store = new RelationStore(root), source = path.join(root, 'Data.json');
+    const rules = addCandidates(emptyRules(), parseRelations('[["ID","Item","Empty"],[1,100,999]]'), [table('Items', ['100'])], true);
+    await fs.mkdir(path.dirname(store.file), { recursive: true });
+    await fs.writeFile(store.file, JSON.stringify({ version: 1, files: { 'Data.json': rules, 'Other.json': rules } }));
+    assert.deepEqual(await store.read(source), rules);
+    await store.write(source, rules, rules);
+    const text = await fs.readFile(store.file, 'utf8');
+    const stored = JSON.parse(text);
+    assert.equal(stored.version, 2);
+    for (const file of ['Data.json', 'Other.json']) {
+        assert.equal(stored.files[file].fields, undefined);
+        assert.equal(stored.files[file].results[fieldKey(2, 'Empty')], undefined);
+    }
+    assert.deepEqual(await store.snapshot(), { 'Data.json': rules, 'Other.json': rules });
+    await store.write(source, rules, rules);
+    assert.equal(await fs.readFile(store.file, 'utf8'), text);
+});
+
+test('精简格式拒绝损坏的扫描范围及越界结果，写入不会覆盖损坏文件', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-reading-compact-invalid-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const store = new RelationStore(root), field = fieldKey(1, 'Item');
+    await fs.mkdir(path.dirname(store.file), { recursive: true });
+    const valid = { scanComplete: true, scanScope: [field], results: {} };
+    for (const invalid of [
+        { ...valid, scanComplete: 'true' },
+        { ...valid, scanScope: [field, field] },
+        { ...valid, scanScope: ['invalid key'] },
+        { ...valid, results: { [fieldKey(2, 'Other')]: { targets: {} } } },
+        { ...valid, results: { [field]: null } },
+        { ...valid, results: { [field]: {} } },
+        { ...valid, results: { [field]: { targets: [] } } },
+        { ...valid, scannedFields: [field] },
+        { ...valid, scanComplete: false, scannedFields: [fieldKey(2, 'Other')] },
+        { ...valid, scanComplete: false, scannedFields: null }
+    ]) {
+        assert.throws(() => deserializeRules(invalid as unknown as StoredRelationRules));
+        const text = JSON.stringify({ version: 2, files: { 'Data.json': invalid } });
+        await fs.writeFile(store.file, text);
+        await assert.rejects(store.write(path.join(root, 'Data.json'), emptyRules()), /不会覆盖原文件/);
+        assert.equal(await fs.readFile(store.file, 'utf8'), text);
+    }
 });
 
 test('共享单文件按源相对路径隔离，重启/项目搬迁保留，清除 A 不影响 B', async t => {

@@ -9,6 +9,13 @@ export function isRelationFile(file: string) {
     return file.replace(/\\/g, '/').toLowerCase().endsWith('/' + relationFile);
 }
 interface SharedRules { version: 1; files: Record<string, RelationRules> }
+/** scanComplete 仅作用于 scanScope；新字段仍保持未扫描。 */
+export interface StoredRelationRules {
+    scanComplete: boolean;
+    scanScope: string[];
+    scannedFields?: string[];
+    results: Record<string, { targets: Record<string, TargetRule> }>;
+}
 const same = isDeepStrictEqual;
 
 /** 项目相对路径让不同成员的磁盘路径不影响规则复用。 */
@@ -31,12 +38,13 @@ export class RelationStore {
         }
         try {
             const value = JSON.parse(text.replace(/^\uFEFF/, ''));
-            if (value?.version !== 1 || !value.files || typeof value.files !== 'object' || Array.isArray(value.files)) { throw new Error('结构或版本不正确'); }
+            if (![1, 2].includes(value?.version) || !value.files || typeof value.files !== 'object' || Array.isArray(value.files)) { throw new Error('结构或版本不正确'); }
+            const files: Record<string, RelationRules> = {};
             for (const [file, rules] of Object.entries(value.files)) {
                 if (file.startsWith('/') || /^[A-Za-z]:/.test(file) || file.split(/[\\/]/).includes('..')) { throw new Error('源文件必须使用项目相对路径'); }
-                normalizeRules(rules as RelationRules);
+                files[file] = value.version === 2 ? deserializeRules(rules as StoredRelationRules) : normalizeRules(rules as RelationRules);
             }
-            return value as SharedRules;
+            return { version: 1, files };
         } catch (error) { throw new Error(`匹配表 ${this.file} 无法读取，请先修复 JSON 格式或 Git 冲突；不会覆盖原文件。${String(error)}`); }
     }
     async read(file: string): Promise<RelationRules | undefined> {
@@ -91,7 +99,9 @@ export class RelationStore {
                 }
                 all.files[key] = current;
             }
-            const content = JSON.stringify(sorted(all), null, 2) + '\n';
+            const content = JSON.stringify(sorted({ version: 2, files: Object.fromEntries(
+                Object.entries(all.files).map(([file, value]) => [file, serializeRules(value)])
+            ) }), null, 2) + '\n';
             const existing = await fs.readFile(this.file, 'utf8').catch(error => {
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return ''; }
                 throw error;
@@ -114,6 +124,41 @@ function sorted(value: unknown): unknown {
         return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b, 'en')).map(([key, item]) => [key, sorted(item)]));
     }
     return value;
+}
+
+/** 磁盘只保存非空结果；扫描范围与部分完成状态集中存放。 */
+export function serializeRules(rules: RelationRules): StoredRelationRules {
+    const normalized = normalizeRules(rules);
+    const scanScope = Object.keys(normalized.fields).sort((a, b) => a.localeCompare(b, 'en'));
+    const scannedFields = scanScope.filter(field => normalized.fields[field].scanned);
+    const scanComplete = scanScope.length > 0 && scannedFields.length === scanScope.length;
+    return {
+        scanComplete, scanScope,
+        ...(!scanComplete && scannedFields.length ? { scannedFields } : {}),
+        results: Object.fromEntries(scanScope.filter(field => Object.keys(normalized.fields[field].targets).length)
+            .map(field => [field, { targets: normalized.fields[field].targets }]))
+    };
+}
+
+/** 恢复内部字段状态，让查询、并发合并及侧栏沿用同一套规则。 */
+export function deserializeRules(rules: StoredRelationRules): RelationRules {
+    if (!rules || typeof rules.scanComplete !== 'boolean' || !Array.isArray(rules.scanScope) ||
+        rules.scanScope.some(field => typeof field !== 'string') || new Set(rules.scanScope).size !== rules.scanScope.length ||
+        !rules.results || typeof rules.results !== 'object' || Array.isArray(rules.results)) { throw new Error('扫描范围或结果格式不正确'); }
+    const scope = new Set(rules.scanScope);
+    const scanned = rules.scannedFields === undefined ? [] : rules.scannedFields;
+    if (!Array.isArray(scanned) || scanned.some(field => typeof field !== 'string' || !scope.has(field)) ||
+        new Set(scanned).size !== scanned.length || (rules.scanComplete && rules.scannedFields !== undefined) ||
+        Object.keys(rules.results).some(field => !scope.has(field))) { throw new Error('扫描状态与范围不一致'); }
+    const scannedSet = new Set(scanned);
+    const fields = Object.fromEntries(rules.scanScope.map(field => {
+        const entry = rules.results[field];
+        if (Object.hasOwn(rules.results, field) && (!entry || typeof entry !== 'object' || Array.isArray(entry))) {
+            throw new Error('字段结果格式不正确');
+        }
+        return [field, { scanned: rules.scanComplete || scannedSet.has(field), targets: entry ? entry.targets : {} }];
+    }));
+    return normalizeRules({ fields });
 }
 
 export function normalizeRules(rules: RelationRules): RelationRules {

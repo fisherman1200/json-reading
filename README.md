@@ -190,6 +190,23 @@ extensions/json_reading/relations.json
 
 规则使用项目及策划目录的相对路径。个人的展开 / 收起偏好单独保存在 VS Code 工作区状态中，不写入共享规则文件。多根工作区按源 JSON 所属的项目分别保存规则。
 
+匹配表使用 `version: 2` 精简格式，仍按 `files` 中的源 JSON 相对路径隔离。每个文件的 `results` 只保存含有关联目标的字段（包括已排除的关系），不再逐字段写入 `scanned` 和空的 `targets`。例如，两个字段已扫描但均无匹配时：
+
+```json
+{
+  "version": 2,
+  "files": {
+    "Example.json": {
+      "scanComplete": true,
+      "scanScope": ["[1,\"Item\"]", "[2,\"Type\"]"],
+      "results": {}
+    }
+  }
+}
+```
+
+`scanComplete` 表示 `scanScope` 范围内的字段全部扫描完成；只有部分字段完成时，用 `scannedFields` 列出已扫描字段。范围外的字段（包括后来新增的字段）仍视为未扫描。旧版 `version: 1` 文件可直接读取，下次保存时整份文件自动转为精简格式；离线生成器也输出新格式。使用新格式后，团队成员需要使用支持该格式的扩展版本。
+
 ### 环境与支持范围
 
 | 使用场景 | 说明 |
@@ -227,51 +244,3 @@ JSON 编辑过程中暂时存在语法错误时，提示会暂时消失，语法
 
 - **手动全搜索当前字段的关联**：扫描当前字段所有记录中的值，补充待确认候选。数值相同不一定代表业务上存在关联，需要人工判断。
 - **清空当前 JSON 的关联匹配表**：删除当前 JSON 的全部规则，不影响其他 JSON，也不会自动重新搜索。
-
-### 开发与打包
-
-仅开发、测试和打包需要 **Node.js 22 或更高版本**及 npm。在扩展源码目录运行：
-
-```sh
-npm install
-npm run compile
-npm run lint
-npm run test:unit
-npm test
-```
-
-按 F5 启动扩展开发窗口。`npm test` 运行 VS Code 扩展宿主测试，首次运行需要下载对应版本的 VS Code。
-
-需要生成新的安装包时执行：
-
-```sh
-npm run package
-```
-
-该命令先编译，再将 VSIX 输出到 `dist/`，不会发布到扩展商店。源码中的测试、开发脚本和业务数据不随安装包分发；README 中的说明图作为扩展资源保留。
-
-README 的五张说明图使用专用公开截图仓库的 HTTPS 链接，固定到具体提交；查看说明图需要联网。VSIX 内也保留相同图片。执行 `npm run check:screenshots` 可检查五个链接是否允许匿名访问，并验证远端图片与本地图片的 SHA-256 一致。更新截图时，应先上传已审核图片，再更新 README 中的固定版本链接。
-
-打包采用文件白名单，仅包含运行文件、运行时依赖、图标和已检查的说明资料。`npm run package` 不上传截图，也不发布扩展；正式上架时仍需检查商店详情页的实际展示效果。
-
-### 数据处理
-
-JSON、策划表和关联规则在本机读取与处理，扩展没有遥测、AI 请求或业务数据上传功能。手动执行分支同步时，Git 会连接策划仓库配置的 `origin`；共享规则写入业务项目，展开偏好保存在本地工作区状态中。
-
-<details>
-<summary>可选：离线生成初始匹配规则</summary>
-
-开发脚本可以分析业务项目中的配置引用，生成待检查的匹配建议。它们用于准备初始规则，不是安装或日常使用的必需步骤；扩展运行时不调用 AI。
-
-在扩展源码目录执行，按实际情况替换业务项目和策划目录：
-
-```powershell
-npm run compile
-node scripts/inventory-client-config.cjs D:\业务项目 D:\策划表\config .vscode-test/inventory.json
-node scripts/analyze-client-relations.cjs D:\业务项目 .vscode-test/inventory.json .vscode-test/proposals.json
-node scripts/build-client-relation-map.cjs D:\业务项目 .vscode-test/inventory.json .vscode-test/relations.generated.json .vscode-test/proposals.json
-```
-
-脚本将结果写入指定输出，不直接覆盖业务项目。检查建议与旁边的 `.summary.json` 后，再将结果合并到业务项目的 `extensions/json_reading/relations.json`。分析不能覆盖所有动态调用或仅在服务端使用的关系，需要结合业务代码确认。
-
-</details>
