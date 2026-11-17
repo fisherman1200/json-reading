@@ -56,9 +56,10 @@ test('离线生成器覆盖清单、拒绝歧义目标并保留已有确认/排�
         assert.equal(result.files[source].scanComplete, true);
         assert.equal(result.files[source].results[fieldKey(2, 'Type')], undefined);
         const fields = deserializeRules(result.files[source]).fields;
-        assert.deepEqual(deserializeRules(result.files[other]).fields, {});
+        assert.equal(result.files[other], undefined);
         assert.equal(fields[fieldKey(0, 'ID')], undefined);
-        assert.deepEqual(fields[fieldKey(2, 'Type')], { scanned: true, targets: {} });
+        assert.equal(fields[fieldKey(2, 'Type')], undefined);
+        assert.deepEqual(result.files[source].scanScope, Object.keys(result.files[source].results));
         assert.equal(fields[field].targets[targetKey(known)].decision, 'rejected');
         assert.equal(fields[field].targets[targetKey(kept)].decision, 'accepted');
         assert.equal(fields[field].targets[targetKey(pending)], undefined);

@@ -8,7 +8,7 @@
   "displayName": "json_reading",
   "icon": "media/json-reading.png",
   "description": "为表格型 JSON 数据显示首行定义的字段名",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "vscode": "^1.140.0"

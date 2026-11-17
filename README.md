@@ -41,7 +41,7 @@ JSON Reading 是一个面向表格型 JSON / JSONC 配置的 VS Code 扩展。�
 code --install-extension Fishererer.json-reading
 ```
 
-离线安装可使用维护者提供的 `json-reading-0.0.3.vsix`，在扩展视图右上角选择 **… → 从 VSIX 安装…**。
+离线安装可使用维护者提供的 `json-reading-0.0.4.vsix`，在扩展视图右上角选择 **… → 从 VSIX 安装…**。
 
 安装和日常使用无需安装 Node.js。字段提示及 XLSM 内容读取也不要求安装 Excel；打开工作簿、自动定位页签和 Git 同步的环境要求见[其他说明](#其他说明)。
 
@@ -192,22 +192,16 @@ extensions/json_reading/relations.json
 
 规则使用项目及策划目录的相对路径。个人的展开 / 收起偏好单独保存在 VS Code 工作区状态中，不写入共享规则文件。多根工作区按源 JSON 所属的项目分别保存规则。
 
-匹配表使用 `version: 2` 精简格式，仍按 `files` 中的源 JSON 相对路径隔离。每个文件的 `results` 只保存含有关联目标的字段（包括已排除的关系），不再逐字段写入 `scanned` 和空的 `targets`。例如，两个字段已扫描但均无匹配时：
+匹配表使用 `version: 2` 精简格式，仍按 `files` 中的源 JSON 相对路径隔离。每个文件的 `results` 和 `scanScope` 只保存含有关联目标的字段（包括已排除的关系）。没有任何关联的源文件整条省略；如果全部文件均无关联，匹配表只保存：
 
 ```json
 {
   "version": 2,
-  "files": {
-    "Example.json": {
-      "scanComplete": true,
-      "scanScope": ["[1,\"Item\"]", "[2,\"Type\"]"],
-      "results": {}
-    }
-  }
+  "files": {}
 }
 ```
 
-`scanComplete` 表示 `scanScope` 范围内的字段全部扫描完成；只有部分字段完成时，用 `scannedFields` 列出已扫描字段。范围外的字段（包括后来新增的字段）仍视为未扫描。旧版 `version: 1` 文件可直接读取，下次保存时整份文件自动转为精简格式；离线生成器也输出新格式。使用新格式后，团队成员需要使用支持该格式的扩展版本。
+`scanComplete` 表示保留的 `scanScope` 范围内字段全部扫描完成；只有部分字段完成时，用 `scannedFields` 列出已扫描字段。无关联字段的扫描状态不再持久化，重新加载后显示为未添加关联；扩展不会因缺少记录而自动搜索，仅手动全搜索时重新扫描。旧版 `version: 1` 和已有 `version: 2` 文件均可读取，下次保存会清理所有空记录；离线生成器同样只输出有关联的文件和字段。文件格式仍兼容 0.0.3 的读取。
 
 ### 环境与支持范围
 

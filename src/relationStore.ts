@@ -99,9 +99,10 @@ export class RelationStore {
                 }
                 all.files[key] = current;
             }
-            const content = JSON.stringify(sorted({ version: 2, files: Object.fromEntries(
-                Object.entries(all.files).map(([file, value]) => [file, serializeRules(value)])
-            ) }), null, 2) + '\n';
+            const files = Object.fromEntries(Object.entries(all.files)
+                .map(([file, value]) => [file, serializeRules(value)] as const)
+                .filter(([, value]) => Object.keys(value.results).length));
+            const content = JSON.stringify(sorted({ version: 2, files }), null, 2) + '\n';
             const existing = await fs.readFile(this.file, 'utf8').catch(error => {
                 if ((error as NodeJS.ErrnoException).code === 'ENOENT') { return ''; }
                 throw error;
@@ -126,17 +127,17 @@ function sorted(value: unknown): unknown {
     return value;
 }
 
-/** 磁盘只保存非空结果；扫描范围与部分完成状态集中存放。 */
+/** 只持久化有关联的字段，空字段的扫描状态也不占用匹配表。 */
 export function serializeRules(rules: RelationRules): StoredRelationRules {
     const normalized = normalizeRules(rules);
-    const scanScope = Object.keys(normalized.fields).sort((a, b) => a.localeCompare(b, 'en'));
+    const scanScope = Object.keys(normalized.fields).filter(field => Object.keys(normalized.fields[field].targets).length)
+        .sort((a, b) => a.localeCompare(b, 'en'));
     const scannedFields = scanScope.filter(field => normalized.fields[field].scanned);
     const scanComplete = scanScope.length > 0 && scannedFields.length === scanScope.length;
     return {
         scanComplete, scanScope,
         ...(!scanComplete && scannedFields.length ? { scannedFields } : {}),
-        results: Object.fromEntries(scanScope.filter(field => Object.keys(normalized.fields[field].targets).length)
-            .map(field => [field, { targets: normalized.fields[field].targets }]))
+        results: Object.fromEntries(scanScope.map(field => [field, { targets: normalized.fields[field].targets }]))
     };
 }
 

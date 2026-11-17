@@ -290,27 +290,30 @@ test('同一目标多条条件规则与不同目标键分别保存；旧规则�
     assert.throws(() => normalizeRules(invalid), /条件/);
 });
 
-test('精简结果省略空字段并保留扫描范围、部分扫描及手动规则', () => {
+test('精简结果完全省略空字段，仅保留有关联字段的扫描状态', () => {
     const parsed = parseRelations(JSON.stringify([
         ['ID', ...Array.from({ length: 100 }, (_, i) => `Field${i}`)],
         [1, ...Array(100).fill(999)]
     ]));
     const rules = addCandidates(emptyRules(), parsed, [], true);
     const compact = serializeRules(rules);
-    assert.equal(compact.scanComplete, true);
+    assert.equal(compact.scanComplete, false);
+    assert.deepEqual(compact.scanScope, []);
     assert.deepEqual(compact.results, {});
     assert.equal(compact.scannedFields, undefined);
     assert.ok(JSON.stringify(compact, null, 2).length < JSON.stringify(rules, null, 2).length / 2);
-    assert.deepEqual(deserializeRules(compact), rules);
+    assert.deepEqual(deserializeRules(compact), emptyRules());
     assert.equal(deserializeRules(compact).fields[fieldKey(101, 'NewField')], undefined);
 
     const manual = fieldKey(101, 'Manual');
     const partial = addManualRelation(rules, manual, table('Items', []).target);
+    const scannedField = fieldKey(1, 'Field0');
+    partial.fields[scannedField].targets = { [targetKey(table('Other', []).target)]: { target: table('Other', []).target, decision: 'rejected' } };
     const stored = serializeRules(partial);
     assert.equal(stored.scanComplete, false);
-    assert.equal(stored.scannedFields?.length, 100);
-    assert.deepEqual(Object.keys(stored.results), [manual]);
-    assert.deepEqual(deserializeRules(stored), partial);
+    assert.deepEqual(stored.scannedFields, [scannedField]);
+    assert.deepEqual(new Set(Object.keys(stored.results)), new Set([manual, scannedField]));
+    assert.deepEqual(deserializeRules(stored), { fields: { [manual]: partial.fields[manual], [scannedField]: partial.fields[scannedField] } });
     assert.deepEqual(deserializeRules(serializeRules(emptyRules())), emptyRules());
 });
 
@@ -330,9 +333,32 @@ test('旧匹配表读取后保存为精简格式，其他源文件同步迁移�
         assert.equal(stored.files[file].fields, undefined);
         assert.equal(stored.files[file].results[fieldKey(2, 'Empty')], undefined);
     }
-    assert.deepEqual(await store.snapshot(), { 'Data.json': rules, 'Other.json': rules });
+    const retained = { fields: { [fieldKey(1, 'Item')]: rules.fields[fieldKey(1, 'Item')] } };
+    assert.deepEqual(await store.snapshot(), { 'Data.json': retained, 'Other.json': retained });
     await store.write(source, rules, rules);
     assert.equal(await fs.readFile(store.file, 'utf8'), text);
+});
+
+test('保存时删除旧版空文件，新空扫描不写入文件记录也不触发自动扫描', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-reading-empty-prune-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const store = new RelationStore(root), source = path.join(root, 'Empty.json');
+    const field = fieldKey(1, 'Ref');
+    await fs.mkdir(path.dirname(store.file), { recursive: true });
+    await fs.writeFile(store.file, JSON.stringify({ version: 2, files: {
+        'Empty.json': { scanComplete: true, scanScope: [field], results: {} },
+        'OtherEmpty.json': { scanComplete: true, scanScope: [field], results: {} }
+    } }));
+    const parsed = parseRelations('[["ID","Ref"],[1,100]]');
+    const emptyScan = addCandidates(emptyRules(), parsed, [], true);
+    await store.write(source, emptyScan);
+    assert.deepEqual(JSON.parse(await fs.readFile(store.file, 'utf8')), { version: 2, files: {} });
+    assert.equal(await store.read(source), undefined);
+    const reloaded = (await store.read(source)) ?? emptyRules();
+    assert.deepEqual(addCandidates(reloaded, parsed, [table('Items', ['100'])]), emptyRules());
+    const manualScan = addCandidates(reloaded, parsed, [table('Items', ['100'])], true);
+    await store.write(source, manualScan);
+    assert.deepEqual(await store.read(source), manualScan);
 });
 
 test('精简格式拒绝损坏的扫描范围及越界结果，写入不会覆盖损坏文件', async t => {

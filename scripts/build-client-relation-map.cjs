@@ -130,6 +130,7 @@ for (const [file, value] of Object.entries(result.files)) {
         }
     }
     if (count) { matchedJson++; }
+    else { delete result.files[file]; }
 }
 function sorted(value) {
     if (Array.isArray(value)) { return value.map(sorted); }
