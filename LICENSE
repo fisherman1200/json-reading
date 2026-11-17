@@ -1,18 +1,36 @@
-JSON Reading — Rights Reserved
+JSON Reading — Free Use License / 免费使用许可
 
-All rights in the original JSON Reading code, documentation, and artwork are
-reserved by their respective rights holders. No open-source license or other
-permission to use, copy, modify, or redistribute those materials is granted by
-this file. Any permission separately granted by a rights holder remains
-unaffected.
+The rights holders grant you a non-exclusive, royalty-free permission to
+download, install, and use unmodified, officially distributed copies of JSON
+Reading for personal or organizational purposes, including commercial work.
+You may make copies reasonably necessary for that installation, use, and backup.
 
-The distribution license for a public release has not yet been selected.
-Preparing a local installation package does not grant permission to publish it.
+All other rights in the original code, documentation, and artwork are reserved.
+This license does not grant permission to modify, create derivative works from,
+redistribute, sublicense, or sell JSON Reading. Those activities require separate
+permission from the applicable rights holders, except where applicable law
+provides otherwise. This is not an open-source license.
 
-Third-party components remain subject to their own licenses. See
+This license does not restrict your rights in your own data, configuration files,
+or outputs created while using the extension. Third-party components remain
+subject to their own licenses, which take precedence for those components. See
 THIRD_PARTY_NOTICES.md and the notices included with those components.
 
-JSON Reading 原创代码、文档和图像的权利由各自权利人保留。本文件不授予开源
-许可或其他使用、复制、修改、再分发许可，不影响权利人另行给予的授权。
-公开发行的许可证尚未确定；生成本地安装包不代表获得公开发布授权。
-第三方组件仍适用其各自许可证。
+The software is provided "as is", without warranties, to the extent permitted
+by applicable law. Any permission separately granted by a rights holder remains
+unaffected.
+
+权利人授予您非独占、免许可费的许可，允许下载、安装和使用由官方分发、未经
+修改的 JSON Reading，供个人或组织使用，包括商业工作。您可以为安装、使用
+和备份进行合理必要的复制。
+
+原创代码、文档和图像的其他权利均予保留。本许可不授予修改、制作衍生作品、
+再分发、再许可或销售 JSON Reading 的权利；这些行为须另行获得相关权利人
+许可，适用法律另有规定的除外。本许可不是开源许可证。
+
+本许可不限制您对自身数据、配置文件或使用扩展生成的输出所享有的权利。
+第三方组件仍适用各自的许可证，且对于这些组件，以其各自许可证为准；详见
+THIRD_PARTY_NOTICES.md 及组件随附声明。
+
+在适用法律允许的范围内，本软件按“原样”提供，不作担保。本许可不影响权利人
+另行给予的授权。

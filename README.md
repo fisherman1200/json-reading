@@ -26,7 +26,7 @@ JSON Reading 是一个面向表格型 JSON / JSONC 配置的 VS Code 扩展。�
 
 ## 安装
 
-需要 **VS Code 桌面版 1.140.0 或更高版本**。当前提供本地构建的 `json-reading-0.0.2.vsix`，尚未发布到扩展商店。公开发行的许可证仍待确定；当前权利声明见 `LICENSE`。
+需要 **VS Code 桌面版 1.140.0 或更高版本**。当前提供本地构建的 `json-reading-0.0.2.vsix`，发布者标识为 `Fishererer`，尚未发布到扩展商店。允许免费安装和使用（包括商业工作），修改、再分发等其他权利保留；完整条款见 [LICENSE](LICENSE)。
 
 安装扩展：
 
@@ -57,7 +57,7 @@ code --install-extension json-reading-0.0.2.vsix
 
 本文所有截图均使用独立演示项目中的虚构数据，分支统一为 `demo/catalog`；商品、积分、编号及说明均为演示用途。
 
-![策划表侧栏：目录绑定、当前 JSON、分支状态及四个操作按钮](media/screenshots/table-sidebar.png)
+![策划表侧栏：目录绑定、当前 JSON、分支状态及四个操作按钮](https://raw.githubusercontent.com/fisherman1200/json-reading-screenshots/5ca5ea5b0685d4f6fa58c9ce9ce5ac53c9af1eeb/table-sidebar.png)
 
 策划表视图右上角的按钮从左到右分别是：
 
@@ -105,7 +105,7 @@ code --install-extension json-reading-0.0.2.vsix
 
 数据行末显示该值对应的字段名，数组和对象内部的行也会显示所属字段，方便阅读嵌套数据。
 
-![选中多行 JSON 后，在每行末尾显示 ID、exchangeCost、limitCount 等字段名](media/screenshots/field-hints.png)
+![选中多行 JSON 后，在每行末尾显示 ID、exchangeCost、limitCount 等字段名](https://raw.githubusercontent.com/fisherman1200/json-reading-screenshots/5ca5ea5b0685d4f6fa58c9ce9ce5ac53c9af1eeb/field-hints.png)
 
 支持两种显示模式：
 
@@ -120,7 +120,7 @@ code --install-extension json-reading-0.0.2.vsix
 
 悬浮框顶部显示当前字段名、策划表描述和匹配状态。当前字段的备注直接显示全文，下方的来源链接包含工作簿名称和页签名称。
 
-![虚构商品的 limitCount 悬浮说明、演示备注、来源和分支状态](media/screenshots/field-hover.png)
+![虚构商品的 limitCount 悬浮说明、演示备注、来源和分支状态](https://raw.githubusercontent.com/fisherman1200/json-reading-screenshots/5ca5ea5b0685d4f6fa58c9ce9ce5ac53c9af1eeb/field-hover.png)
 
 例如图中的 `limitCount`，可以直接看到“限购次数”和演示规则“`-1` 表示不限次数”的说明，不需要离开当前 JSON 查找字段定义。
 
@@ -133,7 +133,7 @@ code --install-extension json-reading-0.0.2.vsix
 - **顶部匹配状态**：按“工作簿 / 页签 / 目标字段”列出当前字段已配置、未排除的目标，例如 `演示积分.xlsm / 积分 / ID`。未指定目标字段时显示 `ID`；同页签多个目标字段用顿号合并显示。“已匹配”表示存在关联规则；“无匹配”表示没有未排除的规则。
 - **底部关联结果**：显示实际命中的记录。未命中时显示目标表、查询字段与当前值；值为空、条件不满足、未提取到值或读取失败时显示原因。顶部有匹配目标，不代表当前值一定能查到记录。
 
-![虚构商品 exchangeCost 的匹配目标，以及演示积分记录和中文翻译](media/screenshots/relation-results.png)
+![虚构商品 exchangeCost 的匹配目标，以及演示积分记录和中文翻译](https://raw.githubusercontent.com/fisherman1200/json-reading-screenshots/5ca5ea5b0685d4f6fa58c9ce9ce5ac53c9af1eeb/relation-results.png)
 
 匹配目标旁的按钮用于管理关系：
 
@@ -162,7 +162,7 @@ code --install-extension json-reading-0.0.2.vsix
 
 当前字段的备注直接显示；**级联结果中的备注以蓝色、带下划线的“备注”标记显示**，鼠标移上去查看全文，避免较长的说明挤占布局。
 
-![虚构积分记录中的级联翻译和 itemType 备注](media/screenshots/cascade-notes.png)
+![虚构积分记录中的级联翻译和 itemType 备注](https://raw.githubusercontent.com/fisherman1200/json-reading-screenshots/5ca5ea5b0685d4f6fa58c9ce9ce5ac53c9af1eeb/cascade-notes.png)
 
 中文翻译默认从当前 JSON 同目录的 `i18zhConfigData.json` 中读取，按 `KeyID` 查询 `Desc`，无需手动添加关联。因此，i18n 字段顶部显示“无匹配”时，下方仍可能显示中文翻译。语言表路径可以通过设置调整。
 
@@ -250,7 +250,9 @@ npm run package
 
 该命令先编译，再将 VSIX 输出到 `dist/`，不会发布到扩展商店。源码中的测试、开发脚本和业务数据不随安装包分发；README 中的说明图作为扩展资源保留。
 
-本地打包保留 README 的相对图片链接，说明图直接包含在 VSIX 内，不依赖远端旧图片。打包采用文件白名单，仅包含运行文件、运行时依赖、图标和已检查的说明资料。正式上架前还需确定发行许可证、确认发布者账号，并验证商店详情页的图片展示。
+README 的五张说明图使用专用公开截图仓库的 HTTPS 链接，固定到具体提交；查看说明图需要联网。VSIX 内也保留相同图片。执行 `npm run check:screenshots` 可检查五个链接是否允许匿名访问，并验证远端图片与本地图片的 SHA-256 一致。更新截图时，应先上传已审核图片，再更新 README 中的固定版本链接。
+
+打包采用文件白名单，仅包含运行文件、运行时依赖、图标和已检查的说明资料。`npm run package` 不上传截图，也不发布扩展；正式上架时仍需检查商店详情页的实际展示效果。
 
 ### 数据处理
 

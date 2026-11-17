@@ -1,6 +1,6 @@
 {
   "name": "json-reading",
-  "publisher": "fff",
+  "publisher": "Fishererer",
   "repository": {
     "type": "git",
     "url": "https://github.com/fisherman1200/json-reading.git"
@@ -316,6 +316,7 @@
     "vscode:prepublish": "npm run compile",
     "prepackage": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\"",
     "package": "vsce package --out dist/ --no-rewrite-relative-links",
+    "check:screenshots": "node scripts/check-public-screenshots.cjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
