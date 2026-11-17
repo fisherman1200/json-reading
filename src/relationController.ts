@@ -2,10 +2,11 @@ import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { parse, type ParseError } from 'jsonc-parser';
 import type { TableDescriptions } from './tableDescriptions';
-import { addCandidates, addManualRelation, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, ruleKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules, valuesForRule, relationCellsInRange,
-    type RelationCell, type RelationDocument, type RelationRules, type TargetData, type RelationTarget, type RelationRow } from './relations';
+import { extractionChoices, addCandidates, addManualRelation, emptyRules, parseRelations, readTranslations, RelationIndex, targetKey, ruleKey, targetsForDocument, fieldKey, selectRelationField, decideRelationRules, valuesForRule, referenceValues, relationCellsInRange,
+    type RelationExtraction, type RelationCell, type RelationDocument, type RelationRules, type TargetData, type RelationTarget, type RelationRow } from './relations';
 import { configName } from './tableIndex';
 import { RelationStore, isRelationFile, normalizeRules } from './relationStore';
 import { resolveRelationDocument } from './relationDocument';
@@ -23,7 +24,7 @@ export interface RelationState {
 }
 export interface RelationResult {
     field: string; column: number; target: RelationTarget; id: string; rows: RelationRow[]; loading: boolean; error?: string;
-    expandedRows?: CascadeRow[];
+    expandedRows?: CascadeRow[]; message?: string;
 }
 export interface RelationView {
     uri: string; cells: RelationCell[]; state: RelationState; results?: RelationResult[];
@@ -285,8 +286,8 @@ export class RelationController implements vscode.Disposable {
 
     /** 完整关联行只随当前视图请求，文档级加载仍仅保留轻量摘要。 */
     private results(document: vscode.TextDocument, line: number, cells: RelationCell[], state: RelationState): RelationResult[] | undefined {
-        const index = this.index;
-        if (state.loading || !index || this.tables.isUpdating) { return; }
+        if (state.loading || this.tables.isUpdating) { return; }
+        const index = this.index ??= new RelationIndex(this.tables.tableSettings);
         const uri = document.uri.toString(), epoch = this.epochs.get(uri), version = document.version;
         let cached = this.detailViews.get(state);
         if (!cached || cached.epoch !== epoch || cached.rules !== state.rules || cached.index !== index || cached.revision !== this.cascadeRevision) {
@@ -302,18 +303,34 @@ export class RelationController implements vscode.Disposable {
         const identities = new Set<string>();
         for (const cell of cells) {
             if (cell.column === 0) { continue; }
+            if (cell.parts && !cell.parts.length) { continue; }
             const field = fieldKey(cell.column, cell.field);
             for (const candidate of Object.values(state.rules.fields[field]?.targets ?? {})) {
                 if (candidate.decision === 'rejected') { continue; }
+                if (candidate.extract?.arrayIndex !== undefined && cell.parts && !cell.parts.some(part => part.arrayIndex === candidate.extract!.arrayIndex)) { continue; }
                 const key = targetKey(candidate.target), table = tables.get(key);
-                if (!table) { continue; }
-                for (const id of valuesForRule(cell, candidate)) {
-                    if (id.startsWith('i18n_') || !table.rows.get(id)?.length) { continue; }
+                const values = valuesForRule(cell, candidate);
+                if (!values.length) {
+                    const condition = candidate.when;
+                    const conditionFailed = condition && !referenceValues(cell.row[condition.field]).some(value => condition.values.some(expected => String(expected) === value));
+                    const message = conditionFailed
+                        ? `未查询：条件 ${condition.field} = ${condition.values.join(' / ')} 不满足（当前值：${referenceValues(cell.row[condition!.field]).join(' / ') || '(空)'}）。`
+                        : candidate.extract ? '未查询：按关联规则未提取到可查询的值。' : '未查询：当前字段值为空。';
+                    results.push({ field: cell.field, column: cell.column, target: candidate.target, id: '', rows: [], loading: false, message });
+                }
+                for (const id of values) {
+                    if (id.startsWith('i18n_')) { continue; }
                     const identity = JSON.stringify([field, key, id]);
                     if (identities.has(identity)) { continue; }
                     identities.add(identity);
                     const result: RelationResult = { field: cell.field, column: cell.column, target: candidate.target, id, rows: [], loading: true };
                     results.push(result);
+                    if (!table || !table.rows.get(id)?.length) {
+                        result.loading = false;
+                        if (!table) { result.error = state.error ?? '目标表尚未加载，请刷新策划表索引。'; }
+                        else { result.message = `未找到对应记录：${candidate.target.keyField ?? 'ID'} = ${JSON.stringify(id)}。请检查目标字段和当前值是否对应。`; }
+                        continue;
+                    }
                     let group = groups.get(key);
                     if (!group) { group = { target: candidate.target, results: [] }; groups.set(key, group); }
                     group.results.push(result);
@@ -529,25 +546,51 @@ export class RelationController implements vscode.Disposable {
         if (sameTable.some(([, rule]) => rule.when || rule.extract || (rule.target.keyField && rule.target.keyField.toLowerCase() !== 'id'))) {
             const selectedRule = await vscode.window.showQuickPick(sameTable.map(([key, rule]) => ({
                 label: `当前状态: ${rule.decision === 'accepted' ? '已确认' : rule.decision === 'rejected' ? '已排除' : '新增等待'}`,
-                description: rule.when ? `${rule.when.field} = ${rule.when.values.join(' / ')}` : undefined, key
+                description: rule.when ? `${rule.when.field} = ${rule.when.values.join(' / ')}` : undefined,
+                detail: `匹配字段: ${rule.target.keyField ?? 'ID'}`, key
             })), { title: '选择要启用的关联', placeHolder: '选择后启用该关联', ignoreFocusOut: true });
             this.ensureCurrent(valid);
             if (!selectedRule) { return; }
             existingRule = selectedRule.key;
         }
-        const next = addManualRelation(state.rules, field, target, existingRule);
-        const candidate = next.fields[field].targets[existingRule ?? ruleKey(target)];
-        const keyField = candidate.target.keyField ?? 'ID';
-        if (header.filter(name => name.toLowerCase() === keyField.toLowerCase()).length !== 1) {
-            throw new Error(`目标 JSON ${path.basename(file)} 必须包含唯一的 ${keyField} 字段。`);
-        }
-        if (state.rules.fields[field]?.targets[existingRule ?? ruleKey(target)]?.decision === 'accepted') {
-            return `字段「${JSON.parse(field)[1]}」已存在该关联，无需重复添加。`;
-        }
-        const metadata = await index.metadata(candidate.target);
+        const original = existingRule === undefined ? undefined : state.rules.fields[field].targets[existingRule];
+        const metadata = await index.metadata(original?.target ?? target);
         this.ensureCurrent(valid);
-        if ([...metadata.keys()].filter(name => name.toLowerCase() === keyField.toLowerCase()).length !== 1) {
-            throw new Error(`目标页签 ${candidate.target.sheet} 必须包含唯一的 ${keyField} 字段。`);
+        const names = [...metadata.keys()];
+        const preferred = (original?.target.keyField ?? 'ID').toLowerCase();
+        const choices = names.filter(name => name.trim() && header.filter(value => value.trim().toLowerCase() === name.toLowerCase()).length === 1
+            && names.filter(value => value.toLowerCase() === name.toLowerCase()).length === 1)
+            .map(name => ({ label: name, description: metadata.get(name)?.description, keyField: name }))
+            .sort((a, b) => Number(b.keyField.toLowerCase() === preferred) - Number(a.keyField.toLowerCase() === preferred));
+        if (!choices.length) { throw new Error('没有可用的目标字段：目标 JSON 和页签必须包含同名且唯一的字段列。'); }
+        const selectedField = await vscode.window.showQuickPick(choices, { title: `选择 ${target.sheet} 的匹配字段`,
+            placeHolder: '用当前字段的值查询哪个目标字段？例如 activityID → ActType', matchOnDescription: true, ignoreFocusOut: true });
+        this.ensureCurrent(valid);
+        if (!selectedField) { return; }
+        const keyField = selectedField.keyField;
+        const cells = selectRelationField(state.parsed, field).cells;
+        const editor = vscode.window.activeTextEditor;
+        const offset = editor?.document === document ? document.offsetAt(editor.selection.active) : undefined;
+        const current = offset === undefined ? [] : cells.filter(cell => cell.start <= offset && offset < cell.end);
+        const formats = extractionChoices([...current, ...cells.filter(cell => !current.includes(cell))].map(cell => cell.raw));
+        let extraction: RelationExtraction | null | undefined;
+        if (formats.length) {
+            const options: (vscode.QuickPickItem & { extract?: RelationExtraction | null })[] = [
+                ...(original?.extract ? [{ label: '保留原取值方式', description: JSON.stringify(original.extract) }] : []),
+                ...formats,
+                { label: '使用完整值匹配', description: '不按分隔符拆分', extract: null }
+            ];
+            const position = await vscode.window.showQuickPick(options, { title: `选择「${JSON.parse(field)[1]}」的匹配位置`,
+                placeHolder: '选择分隔符和第几项，例如 2001:2 的第 1 项为 2001', matchOnDescription: true, ignoreFocusOut: true });
+            this.ensureCurrent(valid);
+            if (!position) { return; }
+            extraction = position.extract;
+        }
+        const next = addManualRelation(state.rules, field, target, existingRule, keyField, extraction);
+        const selectedExtraction = extraction === undefined ? original?.extract : extraction ?? undefined;
+        const candidate = next.fields[field].targets[ruleKey({ ...target, keyField }, original?.when, selectedExtraction)];
+        if (isDeepStrictEqual(next, state.rules)) {
+            return `字段「${JSON.parse(field)[1]}」已存在该关联，无需重复添加。`;
         }
         // 当前值尚未命中也可建立字段关系；读取成功后再保存，避免把不可读的表写入匹配表。
         await index.read(candidate.target);
@@ -558,7 +601,7 @@ export class RelationController implements vscode.Disposable {
         this.states.delete(uri);
         this.get(document);
         this.changed.fire(uri);
-        return `已为字段「${JSON.parse(field)[1]}」添加关联: ${path.basename(target.file)} / ${target.sheet}。`;
+        return `已为字段「${JSON.parse(field)[1]}」添加关联: ${path.basename(target.file)} / ${target.sheet} / ${keyField}。`;
     }
 
     private async decide(...args: unknown[]) {

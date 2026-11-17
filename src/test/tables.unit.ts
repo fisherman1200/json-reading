@@ -237,7 +237,9 @@ test('missing entries and invalid overrides never guess another sheet', async t 
 test('duplicate registries require explicit configuration', async t => {
     const { directory, settings } = await fixture(t);
     await fs.writeFile(path.join(directory, '注册表.xlsm'), workbook('注册', registryRows));
-    assert.equal((await new TableIndex(settings).lookup('RewardConfig.json')).state, 'error');
+    const result = await new TableIndex(settings).lookup('RewardConfig.json');
+    assert.equal(result.state, 'error');
+    assert.deepEqual(result.registryCandidates?.sort(), [path.join(directory, 'Data', '注册表.xlsm'), path.join(directory, '注册表.xlsm')].sort());
     assert.equal((await new TableIndex({ ...settings, registry: 'Data/注册表.xlsm' }).lookup('RewardConfig.json')).state, 'ready');
 });
 test('malformed workbooks and missing directories return a diagnostic', async t => {

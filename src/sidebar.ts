@@ -29,6 +29,9 @@ export class SidebarNode extends vscode.TreeItem {
         this.iconPath = new vscode.ThemeIcon(entry.icon, entry.color ? new vscode.ThemeColor(entry.color) : undefined);
         this.rulesSnapshot = entry.field ? JSON.stringify(state?.rules.fields[entry.field] ?? null) : undefined;
         this.children = (entry.children ?? []).map(child => new SidebarNode(child, source, state));
+        if (entry.id === 'selectRegistry') {
+            this.command = { command: 'json-reading.selectTableRegistry', title: '选择注册表' };
+        }
         if (entry.kind === 'target' && source) {
             this.command = { command: prefix + 'openWorkbook', title: '打开策划表', arguments: [this] };
         }
@@ -211,6 +214,9 @@ export class JsonReadingSidebar implements vscode.Disposable {
             });
         } else if (table?.message) {
             entries.push(message('table', table.message, table.state === 'loading' ? 'loading~spin' : 'warning'));
+            if (table.state === 'error' && table.registryCandidates?.length) {
+                entries.push(message('selectRegistry', '选择注册表…', 'list-selection'));
+            }
         }
         return entries;
     }

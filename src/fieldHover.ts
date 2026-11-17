@@ -42,6 +42,10 @@ export function createFieldHover(fields: string[], table?: TableView, git?: GitV
         }
     } else if (table?.message) {
         hover.appendText(`\n\n${table.message}`);
+        if (table.state === 'error' && table.registryCandidates?.length) {
+            trustHoverCommands(hover, 'json-reading.selectTableRegistry');
+            hover.appendMarkdown('  [选择注册表](command:json-reading.selectTableRegistry "选择具体的注册表并刷新索引")');
+        }
     }
     if (git) {
         hover.supportThemeIcons = true;

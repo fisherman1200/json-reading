@@ -18,6 +18,7 @@ export interface TableResult {
     source?: TableSource;
     fields?: Map<string, FieldDescription>;
     candidates?: TableSource[];
+    registryCandidates?: string[];
 }
 
 /** @ / ^ 仅表示导出端；用于匹配时移除前缀及文件扩展名。 */
@@ -35,6 +36,14 @@ async function workbookFiles(directory: string): Promise<string[]> {
         else if (entry.isFile() && /\.xlsm$/i.test(entry.name)) { result.push(file); }
     }
     return result.sort();
+}
+
+export async function findRegistries(directory: string): Promise<string[]> {
+    return (await workbookFiles(directory)).filter(file => path.basename(file) === '注册表.xlsm');
+}
+
+class MultipleRegistriesError extends Error {
+    constructor(readonly files: string[]) { super('存在多个注册表，请点击“选择注册表”。'); }
 }
 
 /** 一个配置对应一个索引实例；所有并发查询共用初始化，文件变化后由上层整体替换实例。 */
@@ -59,7 +68,8 @@ export class TableIndex {
             ? [path.resolve(this.settings.directory, this.settings.registry)]
             : files.filter(file => path.basename(file) === '注册表.xlsm');
         if (registries.length !== 1) {
-            throw new Error(registries.length ? '存在多个注册表，请设置注册表相对路径。' : '未找到注册表.xlsm。');
+            if (registries.length > 1) { throw new MultipleRegistriesError(registries); }
+            throw new Error('未找到注册表.xlsm。');
         }
         const registryFile = registries[0];
         const registry = new Map<string, Set<string>>();
@@ -140,7 +150,8 @@ export class TableIndex {
             return { state: 'ready', source, fields: await fields };
         } catch (error) {
             this.log(String(error));
-            return { state: 'error', message: `策划表读取失败: ${error instanceof Error ? error.message : String(error)}` };
+            return { state: 'error', message: `策划表读取失败: ${error instanceof Error ? error.message : String(error)}`,
+                ...(error instanceof MultipleRegistriesError ? { registryCandidates: error.files } : {}) };
         }
     }
 }

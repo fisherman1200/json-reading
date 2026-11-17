@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { addCandidates, addManualRelation, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
+import { extractionChoices, addCandidates, addManualRelation, emptyRules, fieldKey, parseRelations, parseTranslations, targetKey, ruleKey, valuesForRule, targetsForDocument, selectRelationField, decideRelationRules, relationCellsInRange, type TargetData, type TargetRule } from '../relations';
 import { RelationStore, isRelationFile, relationFile, normalizeRules } from '../relationStore';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -168,16 +168,34 @@ test('同表特殊规则必须明确选择，保留条件、提取和非 ID 键�
     assert.throws(() => addManualRelation(previous, field, target, targetKey(other)), /不属于当前目标表/);
     assert.throws(() => addManualRelation(previous, field, target, 'expired'), /已失效/);
     assert.throws(() => addManualRelation(previous, fieldKey(2, 'Other'), target, key), /已失效/);
-    assert.throws(() => addManualRelation(emptyRules(), field, special.target), /非 ID 键必须选择已有规则/);
+    assert.equal(addManualRelation(emptyRules(), field, special.target).fields[field].targets[targetKey(special.target)].target.keyField, 'GroupID');
     for (const candidate of [
         { target, decision: 'pending' as const, when: special.when },
-        { target, decision: 'pending' as const, extract: special.extract },
-        { target: special.target, decision: 'pending' as const }
+        { target, decision: 'pending' as const, extract: special.extract }
     ]) {
         const rules = { fields: { [field]: { scanned: false, targets: { [ruleKey(candidate.target, candidate.when, candidate.extract)]: candidate } } } };
         assert.throws(() => addManualRelation(rules, field, target), /选择现有规则/);
     }
     assert.deepEqual(previous, before);
+});
+
+test('更换特殊规则的目标键保留条件和取值，停用旧键且共享存储不会恢复旧关联', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'json-reading-change-key-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const target = table('活动表', []).target, field = fieldKey(1, 'activityID');
+    const original: TargetRule = { target, decision: 'accepted', when: { field: 'Type', values: [1] }, extract: { separator: ':', index: 0 } };
+    const oldKey = ruleKey(target, original.when, original.extract);
+    const previous = { fields: { [field]: { scanned: false, targets: { [oldKey]: original } } } };
+    const before = structuredClone(previous);
+    const next = addManualRelation(previous, field, target, oldKey, 'ActType');
+    const newKey = ruleKey({ ...target, keyField: 'ActType' }, original.when, original.extract);
+    assert.equal(next.fields[field].targets[oldKey].decision, 'rejected');
+    assert.deepEqual(next.fields[field].targets[newKey], { ...original, target: { ...target, keyField: 'ActType' } });
+    assert.deepEqual(previous, before);
+    const store = new RelationStore(root), source = path.join(root, 'TipsControlConfigData.json');
+    await store.write(source, previous);
+    await store.write(source, next, previous);
+    assert.deepEqual(await store.read(source), next);
 });
 
 test('按同一记录的类型字段分流，嵌套数组逐项提取组合值，不把数量当 ID', () => {
@@ -337,4 +355,30 @@ test('损坏或冲突匹配表不覆盖；自有文件和越界源路径不参�
     assert.equal(parseRelations('{"files":{}}').cells.length, 0);
     assert.equal(parseRelations('[{"ID":1,"Name":"x"}]').cells.length, 0);
     assert.equal(parseRelations('[1,2,3]').cells.length, 0);
+});
+
+
+test('提取位置识别字符串分隔符、嵌套数组和空项，不拆 JSON 数组或小数', () => {
+    assert.deepEqual(extractionChoices([[1, 2], 3.14, 'plain', 'item_123']), []);
+    const choices = extractionChoices([['11012002:2', ['11021003:3']], 'a,,c', '甲：乙']);
+    assert.ok(choices.some(item => item.extract.separator === ':' && item.extract.index === 0 && item.description.includes('11012002')));
+    assert.ok(choices.some(item => item.extract.separator === ',' && item.extract.index === 2 && item.description.includes('c')));
+    assert.ok(choices.some(item => item.extract.separator === '：' && item.extract.index === 1));
+});
+
+test('修改提取位置停用旧规则，保留条件且实际查询使用拆出的 ID', () => {
+    const target = table('Items', ['11012002']).target;
+    const field = fieldKey(1, 'Gift');
+    const old: TargetRule = { target, decision: 'accepted', when: { field: 'Type', values: [1] } };
+    const previous = { fields: { [field]: { scanned: false, targets: { [ruleKey(target, old.when)]: old } } } };
+    const extract = { separator: ':', index: 0 };
+    const next = addManualRelation(previous, field, target, ruleKey(target, old.when), 'ID', extract);
+    const candidate = next.fields[field].targets[ruleKey(target, old.when, extract)];
+    assert.equal(next.fields[field].targets[ruleKey(target, old.when)].decision, 'rejected');
+    assert.equal(old.decision, 'accepted');
+    const cell = parseRelations('[["ID","Gift","Type"],[1,["11012002:2"],1]]').cells[0];
+    assert.deepEqual(valuesForRule(cell, candidate), ['11012002']);
+    assert.deepEqual(candidate.when, old.when);
+    const full = addManualRelation(next, field, target, ruleKey(target, old.when, extract), 'ID', null);
+    assert.equal(full.fields[field].targets[ruleKey(target, old.when)].extract, undefined);
 });

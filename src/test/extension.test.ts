@@ -190,6 +190,7 @@ suite('策划表悬浮提示', () => {
         ]) }, { file: '/project/TestData.json', jsonBranch: 'main', tableBranch: 'main' }, view);
         const visible = visibleHtml(hover.value);
         assert.ok(visible.includes('已匹配: '));
+        assert.ok(hover.value.includes(new vscode.MarkdownString().appendText('矿石[1].xlsm / 矿石 / ID').value));
         assert.ok(visible.includes('中文: '));
         assert.ok(visible.indexOf('奖励道具') < visible.indexOf('已匹配: '));
         assert.ok(visible.indexOf('已匹配: ') < visible.indexOf('备注'));
@@ -274,8 +275,8 @@ suite('策划表悬浮提示', () => {
         const inactiveId = ruleKey(target, inactive.when, inactive.extract);
         const alternate: TargetRule = { ...candidate, target: { ...target, keyField: 'ResourceID' } };
         const alternateId = ruleKey(alternate.target, alternate.when, alternate.extract);
-        const rejected: TargetRule = { ...candidate, decision: 'rejected', when: { field: 'Type', values: [4] } };
-        const rejectedId = ruleKey(target, rejected.when, rejected.extract);
+        const rejected: TargetRule = { ...candidate, target: { ...target, keyField: 'ExcludedID' }, decision: 'rejected', when: { field: 'Type', values: [4] } };
+        const rejectedId = ruleKey(rejected.target, rejected.when, rejected.extract);
         const rules = emptyRules();
         rules.fields[field] = { scanned: true, targets: {
             [ruleId]: candidate, [anotherId]: another, [inactiveId]: inactive, [alternateId]: alternate, [rejectedId]: rejected
@@ -290,7 +291,8 @@ suite('策划表悬浮提示', () => {
         assert.strictEqual(hover.value.match(/command:json-reading\.openSourceWorkbook\?/g)?.length, 1);
         assert.strictEqual(hover.value.match(/command:json-reading\.decideRelation\?/g)?.length, 2);
         assert.ok(!hover.value.includes('Rewards: '));
-        assert.ok(!hover.value.includes('OreID'));
+        assert.ok(visibleHtml(hover.value).includes('矿石.xlsm / 矿石 / OreID、ResourceID'));
+        assert.ok(!visibleHtml(hover.value).includes('ExcludedID'));
         assert.ok(hover.value.includes('<span style="color:#388a34;">$(check)</span>'), '未命中当前条件的待确认规则仍有确认入口');
         const decisions = [...hover.value.matchAll(/command:json-reading\.decideRelation\?([^\s)]+)/g)];
         assert.deepStrictEqual(decisions.map(match => JSON.parse(decodeURIComponent(match[1]))), [
@@ -788,6 +790,12 @@ suite('策划表悬浮提示', () => {
         view.results![0].error = undefined;
         const missing = createFieldHover(['Item'], undefined, undefined, view).value;
         assert.ok(missing.includes(new vscode.MarkdownString().appendText('未找到对应记录').value));
+        assert.ok(visibleHtml(missing).includes('匹配字段: OreID'));
+        assert.ok(visibleHtml(missing).includes('OreID = "100"'));
+        view.results![0].message = '未查询：条件 Type = 2 不满足（当前值：1）。';
+        const conditional = createFieldHover(['Item'], undefined, undefined, view).value;
+        assert.ok(visibleHtml(conditional).includes(view.results![0].message));
+        assert.ok(!conditional.includes('未找到对应记录'));
         for (const value of [loading, failed, missing]) {
             assert.ok(!value.includes(new vscode.MarkdownString().appendText('OreID = 100').value));
         }

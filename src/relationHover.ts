@@ -31,25 +31,28 @@ export function appendFieldRelations(hover: vscode.MarkdownString, fieldName: st
         } else if (state.error) {
             hover.appendText(`关联读取失败: ${state.error}`);
         } else {
-            const matches = new Map<string, { target: RelationTarget; keys: string[]; pending: boolean }>();
+            const matches = new Map<string, { target: RelationTarget; keys: string[]; keyFields: Map<string, string>; pending: boolean }>();
             for (const [key, candidate] of Object.entries(state.rules.fields[field]?.targets ?? {})) {
                 if (candidate.decision === 'rejected') { continue; }
                 // 同一页签可有不同主键或条件规则；操作作用于该字段与此页签的全部未排除规则。
                 const identity = JSON.stringify([candidate.target.file.replaceAll('\\', '/'), candidate.target.sheet]);
                 let match = matches.get(identity);
                 if (!match) {
-                    match = { target: candidate.target, keys: [], pending: false };
+                    match = { target: candidate.target, keys: [], keyFields: new Map(), pending: false };
                     matches.set(identity, match);
                 }
                 match.keys.push(key);
+                const keyField = candidate.target.keyField?.trim() || 'ID';
+                const normalizedKey = keyField.toLowerCase();
+                if (!match.keyFields.has(normalizedKey)) { match.keyFields.set(normalizedKey, normalizedKey === 'id' ? 'ID' : keyField); }
                 match.pending ||= candidate.decision === 'pending';
             }
             hover.appendText(matches.size ? '已匹配: ' : '无匹配');
             let position = 0;
-            for (const { target, keys, pending } of matches.values()) {
+            for (const { target, keys, keyFields, pending } of matches.values()) {
                 if (position++) { hover.appendText('；'); }
                 const basename = path.posix.basename(target.file.replaceAll('\\', '/'));
-                const label = new vscode.MarkdownString().appendText(`${basename} / ${target.sheet}`).value;
+                const label = new vscode.MarkdownString().appendText(`${basename} / ${target.sheet} / ${[...keyFields.values()].join('、')}`).value;
                 const file = path.resolve(state.tableDirectory, target.file);
                 trustHoverCommands(hover, openWorkbookCommand, relationCommands.decide);
                 hover.appendMarkdown(link(label, openWorkbookCommand, [file, target.sheet],
@@ -235,17 +238,22 @@ export function appendRecordResults(hover: vscode.MarkdownString, fields: string
     hover.appendText('关联结果: ');
     if (view?.expansion) { trustHoverCommands(hover, relationCommands.toggle); }
     for (const group of groups.values()) {
+        const target = group[0].target;
+        if (group.some(result => result.message || result.error || (!result.loading && !result.rows.length && !result.expandedRows?.length))) {
+            hover.appendText(`\n\n${path.posix.basename(target.file.replaceAll('\\', '/'))} / ${target.sheet} · 匹配字段: ${target.keyField ?? 'ID'}`);
+        }
         for (const result of group) {
             if (result.loading) {
                 hover.appendText('\n\n正在读取关联记录…');
                 continue;
             }
             if (result.error) { hover.appendText(`\n\n读取失败: ${result.error}`); }
+            if (result.message) { hover.appendText(`\n\n${result.message}`); }
             // 深层读取失败时仍保留已取得的原记录；旧的记录结构也可直接显示。
             const rows: CascadeRow[] = result.expandedRows?.length ? result.expandedRows : result.rows.map(row => ({
                 id: row.id, row: row.row, fields: row.values.map(([name, value]) => ({ name, value }))
             }));
-            if (!rows.length && !result.error) { hover.appendText('\n\n未找到对应记录'); }
+            if (!rows.length && !result.error && !result.message) { hover.appendText(`\n\n未找到对应记录：${result.target.keyField ?? 'ID'} = ${JSON.stringify(result.id)}`); }
             for (const row of rows) {
                 // 同一键可能对应多条配置，保留 Excel 行号便于区分和核对。
                 if (rows.length > 1) { hover.appendText(`\n\n(第 ${row.row} 行)`); }

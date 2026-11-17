@@ -79,6 +79,7 @@ function harness() {
         personalStarted: undefined as ReturnType<typeof deferred<void>> | undefined,
         personalError: undefined as Error | undefined,
         pickChoices: [] as TestPickChoice[],
+        fieldChoice: ((items) => items[0]) as TestPickChoice,
         pickCalls: [] as { items: readonly TestPickItem[]; options: unknown }[],
         dialogPaths: undefined as string[] | undefined,
         dialogCalls: [] as unknown[],
@@ -118,6 +119,7 @@ function harness() {
         showWarningMessage: (message: string) => { warnings.push(message); events.push('warning'); },
         showQuickPick: async (items: readonly TestPickItem[], options: unknown) => {
             controls.pickCalls.push({ items, options });
+            if (items.length && items.every(item => typeof item.keyField === 'string')) { return controls.fieldChoice(items); }
             return controls.pickChoices.shift()?.(items);
         },
         showOpenDialog: async (options: unknown) => {
@@ -483,6 +485,77 @@ function chooseFile(h: ReturnType<typeof harness>, file: string) {
     });
 }
 
+test('手动选择 ActType 可新增非 ID 关联或替换旧 ID 关联，并查到 cujv 的全部记录', async t => {
+    for (const replace of [false, true]) {
+        await t.test(replace ? '更换已有 ID 键' : '目标没有 ID 列', async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const original = table('活动表', ['5']), selected = table('活动表', ['cujv']);
+            selected.target.keyField = 'ActType';
+            const field = relations.fieldKey(1, 'activityID');
+            const previous = replace ? rulesFor(1, 'activityID', { target: original.target, decision: 'accepted' }) : undefined;
+            const { doc } = h.document('TipsControlConfigData.json', JSON.stringify([['ID', 'activityID'], [10, 'cujv']], null, 2), previous);
+            const file = h.file('ActivityConfigData.json', JSON.stringify([replace ? ['ID', 'ActType', 'JsonOnly', 'Duplicate', 'duplicate'] : ['ActType']]));
+            h.controls.targets.set(file, [original.target]);
+            h.controls.tables = [original, selected];
+            h.controls.metadata.set(relations.targetKey(original.target), new Map(['ID', 'ActType', 'ExcelOnly', 'Duplicate'].map(name => [name, { description: name === 'ActType' ? '活动类型' : '', detail: '' }])));
+            const rows: RelationRow[] = [10, 20].map(row => ({ id: 'cujv', row, values: [['ID', String(row)], ['ActType', 'cujv']] }));
+            h.controls.detailRows.set(relations.targetKey(selected.target), new Map([['cujv', rows]]));
+            await h.ready(doc);
+            const line = lineOf(doc, '"cujv"');
+            if (replace) {
+                assert.match(h.controller.view(doc, line)!.results![0].message!, /ID = "cujv"/);
+                assert.equal(h.controls.detailCalls.length, 0);
+            }
+            chooseFile(h, file);
+            h.controls.fieldChoice = items => {
+                assert.deepEqual(items.map(item => item.label), replace ? ['ID', 'ActType'] : ['ActType']);
+                assert.equal(items.find(item => item.label === 'ActType')?.description, '活动类型');
+                return items.find(item => item.keyField === 'ActType');
+            };
+            await h.invoke('add', doc.uri.toString(), field);
+            assert.deepEqual(h.errors, []);
+            assert.equal(h.writes.length, 1);
+            const targets = h.disk.get(doc.uri.fsPath)!.fields[field].targets;
+            assert.equal(targets[relations.targetKey(selected.target)].decision, 'accepted');
+            if (replace) { assert.equal(targets[relations.targetKey(original.target)].decision, 'rejected'); }
+            await h.ready(doc);
+            h.controller.view(doc, line);
+            await settleDetails();
+            const results = h.controller.view(doc, line)!.results!;
+            assert.equal(results.length, 1);
+            assert.equal(results[0].target.keyField, 'ActType');
+            assert.deepEqual(results[0].rows, rows);
+            assert.equal(results[0].message, undefined);
+            assert.equal(h.controls.scans, 0);
+        });
+    }
+});
+
+test('选择目标字段期间源文档变化不保存关联', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const { doc, mutable, field, file } = manualFixture(h);
+    chooseFile(h, file);
+    h.controls.fieldChoice = items => { mutable.version++; return items[0]; };
+    await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
+    assert.equal(h.writes.length, 0);
+    assert.equal(h.information.length, 0);
+    assert.equal(h.warnings.length, 1);
+});
+
+test('无可查询值时说明空值、条件或提取失败原因，不读取完整记录', async t => {
+    const h = harness(); t.after(() => h.controller.dispose());
+    const target = table('活动表', []);
+    const rules = rulesFor(1, 'activityID', { target: target.target, decision: 'accepted' });
+    const { doc } = h.document('EmptyData.json', JSON.stringify([['ID', 'activityID'], [1, '']], null, 2), rules);
+    await h.ready(doc);
+    assert.match(h.controller.view(doc, lineOf(doc, '""'))!.results![0].message!, /当前字段值为空/);
+    const extracted = rulesFor(1, 'activityID', { target: target.target, decision: 'accepted', extract: { separator: ':', index: 1 } });
+    const second = h.document('ExtractData.json', JSON.stringify([['ID', 'activityID'], [1, 'cujv']], null, 2), extracted).doc;
+    await h.ready(second);
+    assert.match(h.controller.view(second, lineOf(second, '"cujv"'))!.results![0].message!, /未提取到/);
+    assert.deepEqual(h.controls.detailCalls, []);
+});
+
 test('手动添加只保存当前字段，保存完成才通知并重新加载，目标无需与当前值碰撞', async t => {
     const h = harness(); t.after(() => h.controller.dispose());
     const other = table('Other', ['200']);
@@ -514,7 +587,7 @@ test('手动添加只保存当前字段，保存完成才通知并重新加载�
     assert.deepEqual((await h.ready(doc)).rules, next);
     assert.equal(h.controller.get(doc)?.data.length, 1);
     assert.deepEqual(h.controls.targetCalls, [file]);
-    assert.equal(h.controls.pickCalls.length, 1);
+    assert.equal(h.controls.pickCalls.length, 2);
     assert.equal(h.controls.pickCalls[0].items.some(item => item.label === 'readme.txt' || item.label === 'Folder.json'), false);
     assert.equal(h.controls.scans, 0);
     assert.deepEqual(h.controls.openedDocuments, []);
@@ -561,7 +634,7 @@ test('一个目标 JSON 对应多个页签时只保存用户选中的工作簿�
     await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
     assert.deepEqual(h.disk.get(doc.uri.fsPath)!.fields[field].targets,
         { [relations.targetKey(selected.target)]: { target: selected.target, decision: 'accepted' } });
-    assert.equal(h.controls.pickCalls.length, 2);
+    assert.equal(h.controls.pickCalls.length, 3);
     assert.deepEqual(h.controls.metadataCalls, [selected.target]);
     assert.equal(h.controls.indexReads.every(item => item.sheet === selected.target.sheet), true);
     await h.ready(doc);
@@ -586,11 +659,11 @@ test('启用已有特殊关联保留条件、提取和非 ID 目标键，不新�
     const expected = structuredClone(previous); expected.fields[field].targets[chosen].decision = 'accepted';
     assert.deepEqual(next, expected);
     assert.equal(h.writes.length, 1);
-    assert.equal(h.controls.pickCalls.length, 2);
+    assert.equal(h.controls.pickCalls.length, 3);
     assert.deepEqual(h.controls.pickCalls[1], {
         items: [
-            { label: '当前状态: 已排除', description: 'Other = 200', key: chosen },
-            { label: '当前状态: 已排除', description: 'Other = 201', key: relations.ruleKey(sibling.target, sibling.when) }
+            { label: '当前状态: 已排除', description: 'Other = 200', detail: '匹配字段: quality', key: chosen },
+            { label: '当前状态: 已排除', description: 'Other = 201', detail: '匹配字段: quality', key: relations.ruleKey(sibling.target, sibling.when) }
         ],
         options: { title: '选择要启用的关联', placeHolder: '选择后启用该关联', ignoreFocusOut: true }
     });
@@ -611,10 +684,10 @@ test('默认 ID 与条件规则共存时必须明确选择，恢复默认关联�
             chooseFile(h, file);
             h.controls.pickChoices.push(items => items.find(item => item.key === relations.ruleKey(target.target)));
             await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
-            assert.equal(h.controls.pickCalls.length, 2, '混合规则不能静默恢复无条件关联');
+            assert.equal(h.controls.pickCalls.length, 3, '混合规则必须选择原规则与目标字段');
             assert.deepEqual(h.controls.pickCalls[1].items[0], {
                 label: `当前状态: ${decision === 'accepted' ? '已确认' : decision === 'pending' ? '新增等待' : '已排除'}`,
-                description: undefined, key: relations.ruleKey(target.target)
+                description: undefined, detail: '匹配字段: ID', key: relations.ruleKey(target.target)
             });
             assert.equal(h.writes.length, decision === 'accepted' ? 0 : 1);
             const expected = structuredClone(previous);
@@ -623,7 +696,7 @@ test('默认 ID 与条件规则共存时必须明确选择，恢复默认关联�
             assert.equal(h.information.length, 1);
             if (decision === 'accepted') {
                 assert.match(h.information[0], /无需重复添加/);
-                assert.deepEqual(h.controls.metadataCalls, []);
+                assert.deepEqual(h.controls.metadataCalls, [target.target]);
             }
             assert.deepEqual(h.errors, []);
             await h.ready(doc);
@@ -632,7 +705,7 @@ test('默认 ID 与条件规则共存时必须明确选择，恢复默认关联�
 });
 
 test('取消文件、浏览窗口、目标页签或特殊规则选择均不保存也不发成功通知', async t => {
-    for (const stage of ['file', 'browse', 'target', 'rule'] as const) {
+    for (const stage of ['file', 'browse', 'target', 'rule', 'field'] as const) {
         await t.test(stage, async t => {
             const h = harness(); t.after(() => h.controller.dispose());
             const previous = stage === 'rule' ? rulesFor(1, 'Ref', {
@@ -642,6 +715,7 @@ test('取消文件、浏览窗口、目标页签或特殊规则选择均不保�
             if (stage === 'browse') { h.controls.pickChoices.push(items => items.find(item => item.browse === true)); }
             else if (stage !== 'file') { chooseFile(h, file); }
             if (stage === 'target') { h.controls.targets.set(file, [target.target, table('Alternative', []).target]); }
+            if (stage === 'field') { h.controls.fieldChoice = () => undefined; }
             await h.ready(doc); await h.invoke('add', doc.uri.toString(), field);
             assert.deepEqual(h.disk.get(doc.uri.fsPath), previous);
             assert.equal(h.writes.length, 0);
@@ -675,7 +749,7 @@ test('手动目标必须是表格 JSON，非法格式在定位工作簿前拒绝
     }
 });
 
-test('默认关联要求目标 JSON 包含唯一 ID 列，允许工作表中同 ID 的多条记录', async t => {
+test('只允许选择 JSON 和工作表共有的唯一字段列，允许同键多条记录', async t => {
     for (const kind of ['missing', 'duplicateColumn', 'duplicateRows'] as const) {
         await t.test(kind, async t => {
             const h = harness(); t.after(() => h.controller.dispose());
@@ -694,7 +768,7 @@ test('默认关联要求目标 JSON 包含唯一 ID 列，允许工作表中同 
                 assert.equal(h.writes.length, 0);
                 assert.deepEqual(h.information, []);
                 assert.equal(h.errors.length, 1);
-                assert.deepEqual(h.controls.metadataCalls, []);
+                assert.equal(h.controls.metadataCalls.length, 1);
             }
         });
     }
@@ -877,12 +951,13 @@ test('同一值多条规则去重，数组组合值按条件提取并批量读�
  ]
 ]`, rules);
     await h.ready(doc);
-    assert.equal(h.controller.view(doc, lineOf(doc, '["100:5"],'))?.results?.length ?? 0, 0);
+    assert.ok(h.controller.view(doc, lineOf(doc, '["100:5"],'))?.results?.every(result => result.message?.includes('条件')));
     assert.equal(h.controls.detailCalls.length, 0);
     const line = lineOf(doc, '["100:2,101:3", "100:9", "999:1"],');
     h.select(doc, line);
     const view = h.controller.view(doc, line)!;
-    assert.deepEqual(view.results!.map(result => result.id).sort(), ['100', '101']);
+    assert.deepEqual(view.results!.map(result => result.id).sort(), ['100', '101', '999']);
+    assert.match(view.results!.find(result => result.id === '999')!.message!, /ID = "999"/);
     assert.deepEqual(h.controls.detailCalls, [{ target: target.target, ids: ['100', '101'] }]);
     await settleDetails();
     const result = h.controller.view(doc, line)!.results!;
@@ -1147,7 +1222,9 @@ test('数组按行查看仍保留 when 整条记录上下文和 arrayIndex 原�
     await h.ready(doc);
     for (const text of ['20', '101,']) {
         const line = lineOf(doc, text); h.select(doc, line);
-        assert.equal(h.controller.view(doc, line)?.results?.length ?? 0, 0);
+        const results = h.controller.view(doc, line)?.results ?? [];
+        if (text === '20') { assert.equal(results.length, 0); }
+        else { assert.match(results[0].message!, /条件 Kind = 1 不满足.*2/); }
     }
     assert.equal(h.controls.detailCalls.length, 0);
     const line = lineOf(doc, '100,'); h.select(doc, line);
@@ -1405,6 +1482,37 @@ test('个人偏好保存期间版本、关闭或索引失效后不触发旧行 h
             assert.deepEqual(h.toggles, []);
             assert.equal(h.personalUpdates.length, 1);
             assert.equal(h.writes.length, 0);
+        });
+    }
+});
+
+
+test('绿色加号选择匹配位置后保存并命中，取消或文档变化不保存', async t => {
+    for (const mode of ['save', 'cancel', 'stale', 'full']) {
+        await t.test(mode, async t => {
+            const h = harness(); t.after(() => h.controller.dispose());
+            const target = table('Items', ['100']);
+            h.controls.tables = [target];
+            const { doc, mutable } = h.document('GiftData.json', '[["ID","Gift"],[1,["100:2","200:3"]]]');
+            const field = relations.fieldKey(1, 'Gift');
+            const file = h.file('TargetData.json', '[["ID","Name"],[100,"物品"]]');
+            h.controls.targets.set(file, [target.target]);
+            chooseFile(h, file);
+            h.controls.pickChoices.push(items => {
+                assert.ok(items.some(item => item.label.includes('第 1 项')));
+                if (mode === 'cancel') { return undefined; }
+                if (mode === 'stale') { mutable.version++; }
+                return items.find(item => mode === 'full' ? item.label === '使用完整值匹配' : item.label.includes('第 1 项'));
+            });
+            await h.ready(doc);
+            await h.invoke('add', doc.uri.toString(), field);
+            if (mode === 'cancel' || mode === 'stale') { assert.equal(h.writes.length, 0); return; }
+            assert.equal(h.writes.length, 1);
+            const candidate = Object.values(h.disk.get(doc.uri.fsPath)!.fields[field].targets)[0];
+            assert.deepEqual(candidate.extract, mode === 'full' ? undefined : { separator: ':', index: 0 });
+            assert.deepEqual(relations.valuesForRule(relations.parseRelations(doc.getText()).cells[0], candidate),
+                mode === 'full' ? ['100:2', '200:3'] : ['100', '200']);
+            assert.deepEqual(h.errors, []);
         });
     }
 });

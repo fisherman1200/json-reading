@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import { TableIndex, configName, type TableResult, type TableSettings } from './tableIndex';
+import { findRegistries, TableIndex, configName, type TableResult, type TableSettings } from './tableIndex';
 
 export type TableView = TableResult | { state: 'loading'; message: string };
 
@@ -35,6 +35,7 @@ export class TableDescriptions implements vscode.Disposable {
                 if (event.affectsConfiguration('json-reading.tables')) { this.reset(); }
             }),
             vscode.workspace.onDidGrantWorkspaceTrust(() => this.reset()),
+            vscode.commands.registerCommand('json-reading.selectTableRegistry', () => this.chooseRegistry()),
             vscode.commands.registerCommand('json-reading.refreshTableIndex', () => this.reset()),
             vscode.commands.registerCommand('json-reading.selectTableDirectory', async () => {
                 if (this.updating) { void vscode.window.showWarningMessage('策划表正在更新，请完成后再更换目录。'); return; }
@@ -113,6 +114,33 @@ export class TableDescriptions implements vscode.Disposable {
             this.changed.fire();
         });
         return loading;
+    }
+
+    private async chooseRegistry() {
+        if (this.disposed) { return; }
+        if (this.updating) { void vscode.window.showWarningMessage('策划表正在更新，请完成后再选择注册表。'); return; }
+        const settings = this.settings(), generation = this.generation;
+        if (!settings.directory || !vscode.workspace.isTrusted) {
+            void vscode.window.showInformationMessage('请先在受信任的工作区选择策划表目录。'); return;
+        }
+        const valid = () => !this.disposed && !this.updating && vscode.workspace.isTrusted
+            && generation === this.generation && settings.directory === this.directory;
+        try {
+            const files = await findRegistries(settings.directory);
+            if (!valid()) { return; }
+            if (!files.length) { void vscode.window.showInformationMessage('未找到注册表.xlsm。'); return; }
+            const selected = await vscode.window.showQuickPick(files.map(file => ({
+                label: path.relative(settings.directory, file).replace(/\\/g, '/'),
+                description: file === path.resolve(settings.directory, settings.registry) ? '当前选择' : undefined,
+                file
+            })), { title: '选择注册表', placeHolder: '选择此策划表目录使用的注册表', ignoreFocusOut: true });
+            if (!selected || !valid()) { return; }
+            await this.save('registry', path.relative(settings.directory, selected.file).replace(/\\/g, '/'));
+            // 即使选择与现有配置相同，也重新加载索引。
+            if (!this.disposed) { this.reset(); }
+        } catch (error) {
+            if (valid()) { void vscode.window.showErrorMessage(`选择注册表失败: ${error instanceof Error ? error.message : String(error)}`); }
+        }
     }
 
     private async chooseWorkbook() {

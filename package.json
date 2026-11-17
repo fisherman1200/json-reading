@@ -8,7 +8,8 @@
   "displayName": "json_reading",
   "icon": "media/json-reading.png",
   "description": "为表格型 JSON 数据显示首行定义的字段名",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "vscode": "^1.140.0"
   },
@@ -45,6 +46,10 @@
       {
         "command": "json-reading.toggleFieldHintsMode",
         "title": "JSON Reading: 切换字段名提示（全部行 / 选中行）"
+      },
+      {
+        "command": "json-reading.selectTableRegistry",
+        "title": "JSON Reading: 选择注册表"
       },
       {
         "command": "json-reading.selectTableDirectory",
@@ -310,7 +315,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "prepackage": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\"",
-    "package": "vsce package --out dist/ --skip-license",
+    "package": "vsce package --out dist/ --no-rewrite-relative-links",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",

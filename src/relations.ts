@@ -57,32 +57,62 @@ export function decideRelationRules(previous: RelationRules, field: string, keys
     return next;
 }
 
-/** 手动选择只建立默认 ID 关联；已有条件、拆分或非 ID 键必须明确选择原规则。 */
-export function addManualRelation(previous: RelationRules, field: string, target: RelationTarget, existingRuleKey?: string): RelationRules {
+/** 更换查询键时停用原规则；条件和提取方式只从用户选定的原规则继承。 */
+export function addManualRelation(previous: RelationRules, field: string, target: RelationTarget, existingRuleKey?: string, keyField?: string, extraction?: RelationExtraction | null): RelationRules {
     const sameSource = (candidate: RelationTarget) => targetKey({ ...candidate, keyField: undefined }) === targetKey({ ...target, keyField: undefined });
     const current = previous.fields[field];
     if (existingRuleKey !== undefined) {
         const candidate = current?.targets[existingRuleKey];
         if (!candidate || !sameSource(candidate.target)) { throw new Error('所选关联规则已失效或不属于当前目标表，请重新选择。'); }
-        return decideRelationRules(previous, field, [existingRuleKey], 'accepted');
+        if (keyField === undefined && extraction === undefined) { return decideRelationRules(previous, field, [existingRuleKey], 'accepted'); }
     }
     const related = Object.entries(current?.targets ?? {}).filter(([, candidate]) => sameSource(candidate.target));
-    const defaults = related.filter(([, candidate]) => !candidate.when && !candidate.extract && (!candidate.target.keyField || candidate.target.keyField.trim().toLowerCase() === 'id'));
-    if (defaults.length !== related.length) { throw new Error('该目标表已有条件、值提取或非 ID 键规则，请选择现有规则，不能直接添加无条件 ID 关联。'); }
-    if (!defaults.length && target.keyField && target.keyField.trim().toLowerCase() !== 'id') { throw new Error('新增手动关联使用 ID 键；非 ID 键必须选择已有规则。'); }
+    const defaults = related.filter(([, candidate]) => !candidate.when && !candidate.extract);
+    if (existingRuleKey === undefined && defaults.length !== related.length) { throw new Error('该目标表已有条件或值提取规则，请选择现有规则，不能直接添加无条件关联。'); }
     const next = structuredClone(previous);
     const rule = next.fields[field] ?? { scanned: false, targets: {} };
-    // 兼容旧键与斜杠写法，重复点击只恢复同一条默认规则，不改变其他条件规则。
-    const accepted: TargetRule = defaults.length
-        ? structuredClone(defaults[0][1])
+    const accepted: TargetRule = existingRuleKey !== undefined
+        ? structuredClone(current!.targets[existingRuleKey])
         : { target: structuredClone(target), decision: 'accepted' };
     accepted.target.file = accepted.target.file.replace(/\\/g, '/');
-    delete accepted.target.keyField;
+    const selectedKey = (keyField ?? accepted.target.keyField ?? 'ID').trim();
+    if (!selectedKey) { throw new Error('请选择非空的目标字段。'); }
+    if (selectedKey.toLowerCase() === 'id') { delete accepted.target.keyField; }
+    else if (accepted.target.keyField?.toLowerCase() !== selectedKey.toLowerCase()) { accepted.target.keyField = selectedKey; }
+    if (extraction === null) { delete accepted.extract; }
+    else if (extraction !== undefined) { accepted.extract = structuredClone(extraction); }
     accepted.decision = 'accepted';
-    for (const [key] of defaults) { delete rule.targets[key]; }
-    rule.targets[targetKey(accepted.target)] = accepted;
+    const nextKey = ruleKey(accepted.target, accepted.when, accepted.extract);
+    for (const [key, candidate] of existingRuleKey === undefined ? defaults : [[existingRuleKey, current!.targets[existingRuleKey]] as const]) {
+        if (ruleKey(candidate.target, candidate.when, candidate.extract) === nextKey) { delete rule.targets[key]; }
+        else { rule.targets[key].decision = 'rejected'; }
+    }
+    rule.targets[nextKey] = accepted;
     next.fields[field] = rule;
     return next;
+}
+
+/** 只检查字符串内容，JSON 数组自身的逗号不作为分隔符。 */
+export function extractionChoices(values: unknown[]): { label: string; description: string; extract: RelationExtraction }[] {
+    const samples = new Set<string>();
+    const visit = (value: unknown) => {
+        if (Array.isArray(value)) { value.forEach(visit); }
+        else if (typeof value === 'string' && value.trim()) { samples.add(value); }
+    };
+    values.forEach(visit);
+    const choices: { label: string; description: string; extract: RelationExtraction }[] = [];
+    for (const separator of [':', ',', ';', '|', '/', '#', '=', '，', '：', '；', '、', '\t']) {
+        const parts = [...samples].filter(value => value.includes(separator)).map(value => value.split(separator));
+        if (!parts.length) { continue; }
+        const count = parts.reduce((max, value) => Math.max(max, value.length), 0);
+        for (let index = 0; index < count; index++) {
+            const examples = [...new Set(parts.map(value => value[index]?.trim()).filter(Boolean))].slice(0, 3);
+            choices.push({ label: `按 ${separator === '\t' ? 'Tab' : '“' + separator + '”'} 分隔 · 第 ${index + 1} 项`,
+                description: `示例：${examples.join(' / ') || '(空值)'}${parts.some(value => index >= value.length) ? '（部分值缺少此项）' : ''}`,
+                extract: { separator, index } });
+        }
+    }
+    return choices;
 }
 
 /** 值仅按标量/数组展开，组合字符串不猜测数量等数字；i18n 可从组合字符串中提取。 */
